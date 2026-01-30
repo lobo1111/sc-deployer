@@ -787,7 +787,7 @@ def interactive_add_portfolio():
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     
     print(f"\n✅ Portfolio '{name}' added!")
-        print(f"\nNext: Run bootstrap to create it in AWS:")
+    print(f"\nNext: Run bootstrap to create it in AWS:")
     
     envs = get_configured_environments()
     if envs:

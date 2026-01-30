@@ -18,23 +18,23 @@ sc-deployer/
 ├── cli.ps1                     # Windows PowerShell wrapper
 ├── cli.sh                      # Linux/macOS Bash wrapper
 ├── README.md
-└── deployer/
+├── products/                   # Product definitions (repo root)
+│   ├── networking/
+│   │   ├── product.yaml        # Product metadata
+│   │   └── template.yaml       # CloudFormation template
+│   ├── database/
+│   │   ├── product.yaml
+│   │   └── template.yaml
+│   └── api/
+│       ├── product.yaml
+│       └── template.yaml
+└── deployer/                   # Deployer tooling
     ├── profiles.yaml           # AWS profiles (shared config)
     ├── bootstrap.yaml          # Bootstrap configuration (portfolios, ECR, S3)
     ├── catalog.yaml            # Products and dependencies
     ├── requirements.txt        # Python dependencies
     ├── .bootstrap-state.json   # Bootstrap state (generated)
     ├── .deploy-state.json      # Deploy state (generated)
-    ├── products/
-    │   ├── networking/
-    │   │   ├── product.yaml    # Product metadata
-    │   │   └── template.yaml   # CloudFormation template
-    │   ├── database/
-    │   │   ├── product.yaml
-    │   │   └── template.yaml
-    │   └── api/
-    │       ├── product.yaml
-    │       └── template.yaml
     └── scripts/
         ├── config.py           # Shared config loader
         ├── manage.py           # Management CLI (profiles, portfolios, products)
