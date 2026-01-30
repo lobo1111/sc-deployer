@@ -538,6 +538,59 @@ def quick_login():
             print(f"   ARN:     {identity['arn']}")
         else:
             print("❌ Credentials not valid or expired")
+            print()
+            
+            # Offer options
+            action = questionary.select(
+                "What would you like to do?",
+                choices=[
+                    questionary.Choice("🔧 Configure credentials (aws configure)", value="configure"),
+                    questionary.Choice("🔄 Convert to SSO profile", value="sso"),
+                    questionary.Choice("📋 Show manual instructions", value="manual"),
+                    questionary.Choice("← Back", value="back"),
+                ],
+                style=custom_style,
+            ).ask()
+            
+            if action == "configure":
+                print(f"\nRunning: aws configure --profile {aws_profile}\n")
+                subprocess.run(["aws", "configure", "--profile", aws_profile])
+                
+                # Check again
+                identity = get_caller_identity(aws_profile)
+                if identity:
+                    print(f"\n✅ Credentials configured!")
+                    print(f"   Account: {identity['account_id']}")
+                else:
+                    print("\n⚠️  Credentials still not valid")
+            
+            elif action == "sso":
+                print(f"\nTo convert '{aws_profile}' to SSO, run:")
+                print(f"   aws configure sso --profile {aws_profile}")
+                print()
+                
+                if questionary.confirm(
+                    "Run this command now?",
+                    default=True,
+                    style=custom_style
+                ).ask():
+                    subprocess.run(["aws", "configure", "sso", "--profile", aws_profile])
+            
+            elif action == "manual":
+                print(f"\n📋 Manual Configuration Options:\n")
+                print(f"1. Configure SSO (recommended):")
+                print(f"   aws configure sso --profile {aws_profile}")
+                print()
+                print(f"2. Configure access keys:")
+                print(f"   aws configure --profile {aws_profile}")
+                print()
+                print(f"3. Edit credentials file directly:")
+                print(f"   {Path.home() / '.aws' / 'credentials'}")
+                print()
+                print(f"4. Use environment variables:")
+                print(f"   $env:AWS_ACCESS_KEY_ID = 'your-key'")
+                print(f"   $env:AWS_SECRET_ACCESS_KEY = 'your-secret'")
+                print(f"   $env:AWS_DEFAULT_REGION = '{configured[env].get('aws_region', 'eu-west-1')}'")
     
     print_command_hint(f"manage.py profiles login {env}")
     confirm_continue()
