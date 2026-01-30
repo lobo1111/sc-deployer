@@ -26,7 +26,7 @@ import questionary
 import yaml
 from questionary import Style
 
-from config import get_project_root, get_products_root, load_bootstrap_config, load_catalog_config
+from config import get_project_root, get_repo_root, get_products_root, load_bootstrap_config, load_catalog_config
 
 
 # ============== STYLING ==============
@@ -247,63 +247,238 @@ def quick_start_wizard():
     
     print("This wizard will help you set up SC Deployer.\n")
     
-    # Step 1: Check for AWS profiles
-    aws_profiles = scan_aws_profiles()
+    # Check if this is a fresh setup
     configured = get_configured_profiles()
+    catalog = load_catalog_config()
+    products = catalog.get("products", {})
     
-    if not configured:
-        print("Step 1: No environments configured yet.\n")
-        
-        if not aws_profiles:
-            print("❌ No AWS profiles found in ~/.aws/config")
-            print("   Please configure AWS CLI first: aws configure sso")
-            confirm_continue()
-            return
-        
-        if questionary.confirm(
-            "Would you like to add an environment now?",
-            default=True,
+    action = questionary.select(
+        "What would you like to do?",
+        choices=[
+            questionary.Choice("🆕 Initialize new project", value="init"),
+            questionary.Choice("👤 Add/configure AWS profile", value="profile"),
+            questionary.Choice("📋 Continue setup (check status)", value="status"),
+            questionary.Choice("← Back", value="back"),
+        ],
+        style=custom_style,
+    ).ask()
+    
+    if action == "back" or action is None:
+        return
+    elif action == "init":
+        init_new_project()
+    elif action == "profile":
+        interactive_add_profile()
+    elif action == "status":
+        show_setup_status()
+
+
+def init_new_project():
+    """Initialize a new project with deployer structure."""
+    clear_screen()
+    print_header("Initialize New Project")
+    
+    print("This will set up a new SC Deployer project.\n")
+    
+    # Get target directory
+    default_path = str(Path.cwd())
+    target = questionary.path(
+        "Project directory:",
+        default=default_path,
+        only_directories=True,
+        style=custom_style,
+    ).ask()
+    
+    if not target:
+        return
+    
+    target_path = Path(target).resolve()
+    
+    # Check if already initialized
+    deployer_path = target_path / "deployer"
+    if deployer_path.exists():
+        print(f"\n⚠️  Directory already has a 'deployer' folder.")
+        if not questionary.confirm(
+            "Continue anyway? (will merge/overwrite)",
+            default=False,
             style=custom_style
         ).ask():
-            interactive_add_profile()
+            return
+    
+    # Create structure
+    print(f"\nInitializing project in: {target_path}\n")
+    
+    # Create directories
+    dirs_to_create = [
+        target_path / "deployer",
+        target_path / "deployer" / "scripts",
+        target_path / "products",
+    ]
+    
+    for d in dirs_to_create:
+        d.mkdir(parents=True, exist_ok=True)
+        print(f"  📁 Created: {d.relative_to(target_path)}")
+    
+    # Copy/create config files
+    source_deployer = get_project_root()
+    
+    files_to_copy = [
+        ("profiles.yaml", "deployer/profiles.yaml"),
+        ("bootstrap.yaml", "deployer/bootstrap.yaml"),
+        ("catalog.yaml", "deployer/catalog.yaml"),
+        ("requirements.txt", "deployer/requirements.txt"),
+        ("scripts/config.py", "deployer/scripts/config.py"),
+        ("scripts/manage.py", "deployer/scripts/manage.py"),
+        ("scripts/bootstrap.py", "deployer/scripts/bootstrap.py"),
+        ("scripts/deploy.py", "deployer/scripts/deploy.py"),
+    ]
+    
+    import shutil
+    
+    for src_rel, dst_rel in files_to_copy:
+        src = source_deployer / src_rel
+        dst = target_path / dst_rel
+        if src.exists():
+            shutil.copy2(src, dst)
+            print(f"  📄 Created: {dst_rel}")
+    
+    # Copy CLI wrappers from repo root
+    repo_root = get_repo_root()
+    for wrapper in ["cli.ps1", "cli.sh"]:
+        src = repo_root / wrapper
+        dst = target_path / wrapper
+        if src.exists():
+            shutil.copy2(src, dst)
+            print(f"  📄 Created: {wrapper}")
+    
+    # Create empty profiles.yaml if copying from template
+    profiles_path = target_path / "deployer" / "profiles.yaml"
+    with open(profiles_path, "w") as f:
+        f.write("# AWS profiles configuration\n\nprofiles: {}\n")
+    
+    # Create minimal catalog.yaml
+    catalog_path = target_path / "deployer" / "catalog.yaml"
+    with open(catalog_path, "w") as f:
+        f.write("""settings:
+  state_file: .deploy-state.json
+  state_backend: local
+  version_format: "%Y.%m.%d.%H%M%S"
+  profiles_file: profiles.yaml
+
+products: {}
+""")
+    
+    # Create minimal bootstrap.yaml
+    bootstrap_path = target_path / "deployer" / "bootstrap.yaml"
+    with open(bootstrap_path, "w") as f:
+        f.write("""settings:
+  state_file: .bootstrap-state.json
+  profiles_file: profiles.yaml
+
+template_bucket:
+  name_prefix: sc-templates
+  versioning: true
+  encryption: AES256
+
+ecr_repositories: []
+
+portfolios: {}
+""")
+    
+    print(f"\n✅ Project initialized!\n")
+    print("Next steps:")
+    print(f"  1. cd {target_path}")
+    print(f"  2. .\\cli.ps1  (or ./cli.sh on Linux/macOS)")
+    print(f"  3. Select 'Quick Start' → 'Add/configure AWS profile'")
+    
+    print_command_hint("manage.py status")
+    confirm_continue()
+
+
+def show_setup_status():
+    """Show detailed setup status and next steps."""
+    clear_screen()
+    print_header("Setup Status")
+    
+    all_good = True
+    
+    # Step 1: Profiles
+    print("Step 1: AWS Profiles")
+    configured = get_configured_profiles()
+    aws_profiles = scan_aws_profiles()
+    
+    if not configured:
+        print("  ❌ No environments configured")
+        print("     → Add a profile: Quick Start → Add/configure AWS profile")
+        all_good = False
     else:
-        print(f"Step 1: ✅ {len(configured)} environment(s) configured\n")
+        print(f"  ✅ {len(configured)} environment(s) configured")
         for name, cfg in configured.items():
-            print(f"   • {name}: {cfg.get('aws_profile')} ({cfg.get('aws_region')})")
+            print(f"     • {name}: {cfg.get('aws_profile')} ({cfg.get('aws_region')})")
     
     print()
     
-    # Step 2: Check bootstrap state
+    # Step 2: Portfolios
+    print("Step 2: Portfolios")
+    config = load_bootstrap_config()
+    portfolios = config.get("portfolios", {})
+    
+    if not portfolios:
+        print("  ⚠️  No portfolios configured")
+        print("     → Add portfolio: Portfolios → Add new portfolio")
+    else:
+        print(f"  ✅ {len(portfolios)} portfolio(s) configured")
+        for name in portfolios:
+            print(f"     • {name}")
+    
+    print()
+    
+    # Step 3: Bootstrap
+    print("Step 3: Bootstrap")
     bootstrap_state_path = get_project_root() / ".bootstrap-state.json"
+    
     if bootstrap_state_path.exists():
         with open(bootstrap_state_path) as f:
             state = json.load(f)
         bootstrapped_envs = list(state.get("environments", {}).keys())
         if bootstrapped_envs:
-            print(f"Step 2: ✅ Bootstrap complete for: {', '.join(bootstrapped_envs)}\n")
+            print(f"  ✅ Bootstrapped: {', '.join(bootstrapped_envs)}")
         else:
-            print("Step 2: ⚠️  Bootstrap not run yet\n")
+            print("  ⚠️  Not bootstrapped yet")
+            all_good = False
     else:
-        print("Step 2: ⚠️  Bootstrap not run yet\n")
-        
-        envs = get_configured_environments()
-        if envs:
-            print("   Run bootstrap to create AWS resources:")
-            for env in envs:
-                print(f"   python deployer/scripts/bootstrap.py bootstrap -e {env}")
+        print("  ⚠️  Not bootstrapped yet")
+        if configured:
+            envs = list(configured.keys())
+            print(f"     → Run: python deployer/scripts/bootstrap.py bootstrap -e {envs[0]}")
+        all_good = False
     
     print()
     
-    # Step 3: Products
+    # Step 4: Products
+    print("Step 4: Products")
     catalog = load_catalog_config()
     products = catalog.get("products", {})
-    print(f"Step 3: {len(products)} product(s) configured\n")
-    for name, cfg in products.items():
-        deps = cfg.get("dependencies", [])
-        dep_str = f" → {', '.join(deps)}" if deps else ""
-        print(f"   • {name}{dep_str}")
+    
+    if not products:
+        print("  ⚠️  No products configured")
+        print("     → Add product: Products → Add new product")
+    else:
+        print(f"  ✅ {len(products)} product(s) configured")
+        for name, cfg in products.items():
+            deps = cfg.get("dependencies", [])
+            dep_str = f" → {', '.join(deps)}" if deps else ""
+            print(f"     • {name}{dep_str}")
     
     print()
+    
+    # Summary
+    if all_good and products:
+        print("🎉 Setup complete! You can now publish and deploy products.")
+        print("   → Select 'Deploy' from main menu")
+    else:
+        print("📋 Complete the steps above to finish setup.")
+    
     print_command_hint("manage.py status")
     confirm_continue()
 
