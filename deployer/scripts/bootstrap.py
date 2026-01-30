@@ -270,7 +270,37 @@ def bootstrap_portfolios(ctx: BootstrapContext) -> dict:
 # ============== SERVICE CATALOG PRODUCTS ==============
 
 
-def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
+def upload_placeholder_template(ctx: BootstrapContext, bucket_name: str, product_name: str) -> str:
+    """Upload a minimal placeholder template to S3 and return URL."""
+    placeholder_template = """AWSTemplateFormatVersion: '2010-09-09'
+Description: Placeholder template - will be replaced on first publish
+
+Resources:
+  PlaceholderWaitHandle:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+Outputs:
+  Status:
+    Description: Placeholder status
+    Value: "Pending first publish"
+"""
+    
+    session = get_session(ctx)
+    s3 = session.client("s3")
+    
+    s3_key = f"_placeholders/{product_name}/placeholder.yaml"
+    s3.put_object(
+        Bucket=bucket_name,
+        Key=s3_key,
+        Body=placeholder_template.encode("utf-8"),
+        ContentType="application/x-yaml"
+    )
+    
+    # Return HTTPS URL
+    return f"https://{bucket_name}.s3.{ctx.aws_region}.amazonaws.com/{s3_key}"
+
+
+def bootstrap_products(ctx: BootstrapContext, portfolios: dict, template_bucket: dict) -> dict:
     """Create Service Catalog product definitions from catalog.yaml."""
     catalog = load_catalog_config()
     products_config = catalog.get("products", {})
@@ -291,6 +321,11 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
 
     session = get_session(ctx)
     sc = session.client("servicecatalog")
+    
+    bucket_name = template_bucket.get("name")
+    if not bucket_name:
+        print("  ⚠️  No template bucket available, skipping product creation")
+        return {}
 
     # Get existing products
     existing = {}
@@ -316,6 +351,9 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
                     meta = yaml.safe_load(f)
                     description = meta.get("description", description)
 
+            # Upload placeholder template
+            template_url = upload_placeholder_template(ctx, bucket_name, product_name)
+
             response = sc.create_product(
                 Name=product_name,
                 Owner="Platform Team",
@@ -327,10 +365,10 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
                     {"Key": "ProductKey", "Value": name},
                 ],
                 ProvisioningArtifactParameters={
-                    "Name": "Initial",
-                    "Description": "Placeholder - will be updated on first publish",
+                    "Name": "v0.0.0-placeholder",
+                    "Description": "Placeholder - will be replaced on first publish",
                     "Type": "CLOUD_FORMATION_TEMPLATE",
-                    "Info": {"LoadTemplateFromURL": ""},
+                    "Info": {"LoadTemplateFromURL": template_url},
                 },
             )
             product_id = response["ProductViewDetail"]["ProductViewSummary"][
@@ -385,7 +423,7 @@ def cmd_bootstrap(ctx: BootstrapContext):
     env_state["portfolios"] = bootstrap_portfolios(ctx)
 
     # 4. Products
-    env_state["products"] = bootstrap_products(ctx, env_state["portfolios"])
+    env_state["products"] = bootstrap_products(ctx, env_state["portfolios"], env_state["template_bucket"])
 
     # Save state
     if not ctx.dry_run:
