@@ -22,6 +22,12 @@ from pathlib import Path
 import boto3
 import yaml
 
+from config import (
+    get_project_root,
+    load_catalog_config,
+    get_environment_config,
+)
+
 
 @dataclass
 class DeployContext:
@@ -34,17 +40,10 @@ class DeployContext:
     dry_run: bool = False
 
 
-def load_catalog(path: Path = None) -> dict:
-    if path is None:
-        path = Path(__file__).parent.parent / "catalog.yaml"
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
 def load_deploy_state(catalog: dict) -> dict:
     state_file = Path(catalog["settings"].get("state_file", ".deploy-state.json"))
     if not state_file.is_absolute():
-        state_file = Path(__file__).parent.parent / state_file
+        state_file = get_project_root() / state_file
     if state_file.exists():
         with open(state_file) as f:
             return json.load(f)
@@ -54,13 +53,13 @@ def load_deploy_state(catalog: dict) -> dict:
 def save_deploy_state(catalog: dict, state: dict):
     state_file = Path(catalog["settings"].get("state_file", ".deploy-state.json"))
     if not state_file.is_absolute():
-        state_file = Path(__file__).parent.parent / state_file
+        state_file = get_project_root() / state_file
     with open(state_file, "w") as f:
         json.dump(state, f, indent=2)
 
 
 def load_bootstrap_state() -> dict:
-    state_file = Path(__file__).parent.parent / ".bootstrap-state.json"
+    state_file = get_project_root() / ".bootstrap-state.json"
     if state_file.exists():
         with open(state_file) as f:
             return json.load(f)
@@ -84,15 +83,11 @@ def get_current_commit() -> str:
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
-            cwd=Path(__file__).parent.parent,
+            cwd=get_project_root(),
         )
         return result.stdout.strip()
     except Exception:
         return "unknown"
-
-
-def get_project_root() -> Path:
-    return Path(__file__).parent.parent
 
 
 # ============== VALIDATION ==============
@@ -694,14 +689,15 @@ Examples:
     args = parser.parse_args()
 
     # Load configs
-    catalog = load_catalog()
+    catalog = load_catalog_config()
     state = load_deploy_state(catalog)
     bootstrap_state = load_bootstrap_state()
 
     # Get environment config
-    env_config = catalog.get("profiles", {}).get(args.environment, {})
-    if not env_config:
-        print(f"Error: Environment '{args.environment}' not found in catalog.yaml")
+    try:
+        env_config = get_environment_config(catalog, args.environment)
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
     # Build context

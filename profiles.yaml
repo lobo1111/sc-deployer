@@ -1,0 +1,13 @@
+# AWS profiles configuration
+# Shared between bootstrap.yaml and catalog.yaml
+
+profiles:
+  dev:
+    aws_profile: my-aws-dev
+    aws_region: eu-west-1
+    account_id: "111111111111"
+
+  prod:
+    aws_profile: my-aws-prod
+    aws_region: eu-west-1
+    account_id: "222222222222"

@@ -15,6 +15,7 @@ AWS Service Catalog deployment orchestrator with dependency management.
 
 ```
 sc-deployer/
+├── profiles.yaml           # AWS profiles (shared config)
 ├── bootstrap.yaml          # Bootstrap configuration (portfolios, ECR, S3)
 ├── catalog.yaml            # Products and dependencies
 ├── .bootstrap-state.json   # Bootstrap state (generated)
@@ -30,6 +31,7 @@ sc-deployer/
 │       ├── product.yaml
 │       └── template.yaml
 └── scripts/
+    ├── config.py           # Shared config loader
     ├── bootstrap.py        # Bootstrap script
     └── deploy.py           # Deploy script
 ```
@@ -94,7 +96,7 @@ python scripts/deploy.py deploy -e prod --profile my-prod --region us-east-1
 
 ## Configuration
 
-### bootstrap.yaml
+### profiles.yaml (shared)
 
 ```yaml
 profiles:
@@ -102,6 +104,18 @@ profiles:
     aws_profile: my-aws-dev
     aws_region: eu-west-1
     account_id: "111111111111"
+
+  prod:
+    aws_profile: my-aws-prod
+    aws_region: eu-west-1
+    account_id: "222222222222"
+```
+
+### bootstrap.yaml
+
+```yaml
+settings:
+  profiles_file: profiles.yaml
 
 template_bucket:
   name_prefix: sc-templates

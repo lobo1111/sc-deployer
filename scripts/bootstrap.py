@@ -17,6 +17,13 @@ from pathlib import Path
 import boto3
 import yaml
 
+from config import (
+    get_project_root,
+    load_bootstrap_config,
+    load_catalog_config,
+    get_environment_config,
+)
+
 
 @dataclass
 class BootstrapContext:
@@ -29,27 +36,10 @@ class BootstrapContext:
     dry_run: bool = False
 
 
-def load_bootstrap_config(path: Path = None) -> dict:
-    if path is None:
-        path = Path(__file__).parent.parent / "bootstrap.yaml"
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
-def load_catalog_config(path: Path = None) -> dict:
-    if path is None:
-        path = Path(__file__).parent.parent / "catalog.yaml"
-    if not path.exists():
-        return {}
-    with open(path) as f:
-        return yaml.safe_load(f)
-
-
 def load_bootstrap_state(config: dict) -> dict:
     state_file = Path(config["settings"].get("state_file", ".bootstrap-state.json"))
-    # Resolve relative to project root
     if not state_file.is_absolute():
-        state_file = Path(__file__).parent.parent / state_file
+        state_file = get_project_root() / state_file
     if state_file.exists():
         with open(state_file) as f:
             return json.load(f)
@@ -59,7 +49,7 @@ def load_bootstrap_state(config: dict) -> dict:
 def save_bootstrap_state(config: dict, state: dict):
     state_file = Path(config["settings"].get("state_file", ".bootstrap-state.json"))
     if not state_file.is_absolute():
-        state_file = Path(__file__).parent.parent / state_file
+        state_file = get_project_root() / state_file
     with open(state_file, "w") as f:
         json.dump(state, f, indent=2)
 
@@ -283,6 +273,7 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
     """Create Service Catalog product definitions from catalog.yaml."""
     catalog = load_catalog_config()
     products_config = catalog.get("products", {})
+    project_root = get_project_root()
 
     if not products_config:
         print("\n[Products] No products in catalog.yaml")
@@ -317,9 +308,7 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
             print(f"  Exists: {name} ({product_id})")
         else:
             # Load product.yaml for description
-            product_yaml = (
-                Path(__file__).parent.parent / config["path"] / "product.yaml"
-            )
+            product_yaml = project_root / config["path"] / "product.yaml"
             description = f"Service Catalog product: {name}"
             if product_yaml.exists():
                 with open(product_yaml) as f:
@@ -481,9 +470,10 @@ Examples:
     state = load_bootstrap_state(config)
 
     # Get environment config
-    env_config = config.get("profiles", {}).get(args.environment, {})
-    if not env_config:
-        print(f"Error: Environment '{args.environment}' not found in bootstrap.yaml")
+    try:
+        env_config = get_environment_config(config, args.environment)
+    except ValueError as e:
+        print(f"Error: {e}")
         sys.exit(1)
 
     # Build context

@@ -3,14 +3,7 @@ settings:
   state_backend: local  # local | s3
   state_bucket: my-deploy-state-bucket
   version_format: "%Y.%m.%d.%H%M%S"
-
-profiles:
-  dev:
-    aws_profile: my-aws-dev
-    aws_region: eu-west-1
-  prod:
-    aws_profile: my-aws-prod
-    aws_region: eu-west-1
+  profiles_file: profiles.yaml
 
 products:
   networking:
