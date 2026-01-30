@@ -4,6 +4,7 @@ Bootstrap module - creates foundational AWS resources for Service Catalog.
 
 Usage:
     python bootstrap.py bootstrap -e dev [--dry-run]
+    python bootstrap.py destroy -e dev [--dry-run] [--force]
     python bootstrap.py status -e dev
 """
 
@@ -393,7 +394,275 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict, template_bucket:
     return results
 
 
+# ============== DESTROY FUNCTIONS ==============
+
+
+def destroy_products(ctx: BootstrapContext) -> int:
+    """Delete Service Catalog products."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    products = env_state.get("products", {})
+    
+    if not products:
+        print("\n[Products] No products to delete")
+        return 0
+    
+    print(f"\n[Products] Deleting {len(products)} products")
+    
+    if ctx.dry_run:
+        for name, info in products.items():
+            print(f"  [DRY RUN] Would delete: {name} ({info.get('id')})")
+        return len(products)
+    
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    deleted = 0
+    
+    for name, info in products.items():
+        product_id = info.get("id")
+        if not product_id:
+            continue
+        
+        try:
+            # First, disassociate from all portfolios
+            try:
+                response = sc.list_portfolios_for_product(ProductId=product_id)
+                for portfolio in response.get("PortfolioDetails", []):
+                    sc.disassociate_product_from_portfolio(
+                        ProductId=product_id,
+                        PortfolioId=portfolio["Id"]
+                    )
+                    print(f"  Disassociated {name} from portfolio {portfolio['Id']}")
+            except Exception:
+                pass
+            
+            # Delete all provisioning artifacts first
+            try:
+                artifacts = sc.list_provisioning_artifacts(ProductId=product_id)
+                for artifact in artifacts.get("ProvisioningArtifactDetails", []):
+                    try:
+                        sc.delete_provisioning_artifact(
+                            ProductId=product_id,
+                            ProvisioningArtifactId=artifact["Id"]
+                        )
+                    except Exception:
+                        pass  # May fail if it's the last one or active
+            except Exception:
+                pass
+            
+            # Delete the product
+            sc.delete_product(Id=product_id)
+            print(f"  Deleted: {name} ({product_id})")
+            deleted += 1
+        except sc.exceptions.ResourceNotFoundException:
+            print(f"  Not found: {name} ({product_id})")
+        except Exception as e:
+            print(f"  [ERROR] {name}: {e}")
+    
+    return deleted
+
+
+def destroy_portfolios(ctx: BootstrapContext) -> int:
+    """Delete Service Catalog portfolios."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    portfolios = env_state.get("portfolios", {})
+    
+    if not portfolios:
+        print("\n[Portfolios] No portfolios to delete")
+        return 0
+    
+    print(f"\n[Portfolios] Deleting {len(portfolios)} portfolios")
+    
+    if ctx.dry_run:
+        for name, info in portfolios.items():
+            print(f"  [DRY RUN] Would delete: {name} ({info.get('id')})")
+        return len(portfolios)
+    
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    deleted = 0
+    
+    for name, info in portfolios.items():
+        portfolio_id = info.get("id")
+        if not portfolio_id:
+            continue
+        
+        try:
+            # Disassociate all principals
+            try:
+                response = sc.list_principals_for_portfolio(PortfolioId=portfolio_id)
+                for principal in response.get("Principals", []):
+                    sc.disassociate_principal_from_portfolio(
+                        PortfolioId=portfolio_id,
+                        PrincipalARN=principal["PrincipalARN"]
+                    )
+            except Exception:
+                pass
+            
+            # Disassociate all products (should already be done)
+            try:
+                paginator = sc.get_paginator("search_products_as_admin")
+                for page in paginator.paginate(PortfolioId=portfolio_id):
+                    for product in page.get("ProductViewDetails", []):
+                        product_id = product["ProductViewSummary"]["ProductId"]
+                        sc.disassociate_product_from_portfolio(
+                            ProductId=product_id,
+                            PortfolioId=portfolio_id
+                        )
+            except Exception:
+                pass
+            
+            # Delete the portfolio
+            sc.delete_portfolio(Id=portfolio_id)
+            print(f"  Deleted: {name} ({portfolio_id})")
+            deleted += 1
+        except sc.exceptions.ResourceNotFoundException:
+            print(f"  Not found: {name} ({portfolio_id})")
+        except Exception as e:
+            print(f"  [ERROR] {name}: {e}")
+    
+    return deleted
+
+
+def destroy_ecr_repositories(ctx: BootstrapContext) -> int:
+    """Delete ECR repositories."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    repos = env_state.get("ecr_repositories", {})
+    
+    if not repos:
+        print("\n[ECR] No repositories to delete")
+        return 0
+    
+    print(f"\n[ECR] Deleting {len(repos)} repositories")
+    
+    if ctx.dry_run:
+        for name in repos:
+            print(f"  [DRY RUN] Would delete: {name}")
+        return len(repos)
+    
+    session = get_session(ctx)
+    ecr = session.client("ecr")
+    deleted = 0
+    
+    for name in repos:
+        try:
+            ecr.delete_repository(repositoryName=name, force=True)
+            print(f"  Deleted: {name}")
+            deleted += 1
+        except ecr.exceptions.RepositoryNotFoundException:
+            print(f"  Not found: {name}")
+        except Exception as e:
+            print(f"  [ERROR] {name}: {e}")
+    
+    return deleted
+
+
+def destroy_template_bucket(ctx: BootstrapContext) -> bool:
+    """Delete S3 template bucket and all contents."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    bucket_info = env_state.get("template_bucket", {})
+    bucket_name = bucket_info.get("name")
+    
+    if not bucket_name:
+        print("\n[S3] No template bucket to delete")
+        return False
+    
+    print(f"\n[S3] Deleting bucket: {bucket_name}")
+    
+    if ctx.dry_run:
+        print(f"  [DRY RUN] Would delete bucket and all contents")
+        return True
+    
+    session = get_session(ctx)
+    s3 = session.resource("s3")
+    s3_client = session.client("s3")
+    
+    try:
+        bucket = s3.Bucket(bucket_name)
+        
+        # Delete all objects (including versions)
+        print("  Deleting objects...")
+        try:
+            bucket.object_versions.delete()
+        except Exception:
+            # Fallback for non-versioned buckets
+            bucket.objects.delete()
+        
+        # Delete the bucket
+        s3_client.delete_bucket(Bucket=bucket_name)
+        print(f"  Deleted: {bucket_name}")
+        return True
+    except s3_client.exceptions.NoSuchBucket:
+        print(f"  Not found: {bucket_name}")
+        return False
+    except Exception as e:
+        print(f"  [ERROR] {bucket_name}: {e}")
+        return False
+
+
 # ============== COMMANDS ==============
+
+
+def cmd_destroy(ctx: BootstrapContext, force: bool = False):
+    """Destroy all bootstrapped resources."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    
+    if not env_state:
+        print(f"\nNo bootstrap state found for environment '{ctx.environment}'")
+        print("Nothing to destroy.")
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"DESTROY: {ctx.environment}")
+    print(f"Account:   {ctx.account_id}")
+    print(f"Region:    {ctx.aws_region}")
+    print(f"Profile:   {ctx.aws_profile}")
+    print(f"Dry Run:   {ctx.dry_run}")
+    print(f"{'='*60}")
+    
+    # Show what will be deleted
+    print("\nResources to be deleted:")
+    products = env_state.get("products", {})
+    portfolios = env_state.get("portfolios", {})
+    ecr_repos = env_state.get("ecr_repositories", {})
+    bucket = env_state.get("template_bucket", {}).get("name")
+    
+    print(f"  - {len(products)} Service Catalog product(s)")
+    print(f"  - {len(portfolios)} Service Catalog portfolio(s)")
+    print(f"  - {len(ecr_repos)} ECR repository(ies)")
+    print(f"  - S3 bucket: {bucket or '(none)'}")
+    
+    # Confirmation
+    if not ctx.dry_run and not force:
+        print(f"\n[WARNING] This will permanently delete all resources!")
+        response = input("Type 'destroy' to confirm: ")
+        if response != "destroy":
+            print("Aborted.")
+            return
+    
+    # Delete in reverse order of creation
+    # 1. Products first (need to be disassociated from portfolios)
+    destroy_products(ctx)
+    
+    # 2. Portfolios
+    destroy_portfolios(ctx)
+    
+    # 3. ECR repositories
+    destroy_ecr_repositories(ctx)
+    
+    # 4. S3 bucket (last, as it may contain templates)
+    destroy_template_bucket(ctx)
+    
+    # Clear state
+    if not ctx.dry_run:
+        if ctx.environment in ctx.state.get("environments", {}):
+            del ctx.state["environments"][ctx.environment]
+        save_bootstrap_state(ctx.config, ctx.state)
+        print(f"\n{'='*60}")
+        print("Destroy complete!")
+        print(f"State cleared for environment: {ctx.environment}")
+    else:
+        print(f"\n{'='*60}")
+        print("[DRY RUN] Destroy simulation complete")
 
 
 def cmd_bootstrap(ctx: BootstrapContext):
@@ -478,6 +747,8 @@ def main():
 Examples:
   python bootstrap.py bootstrap -e dev --dry-run
   python bootstrap.py bootstrap -e dev
+  python bootstrap.py destroy -e dev --dry-run
+  python bootstrap.py destroy -e dev --force
   python bootstrap.py status -e dev
         """,
     )
@@ -495,6 +766,22 @@ Examples:
     )
     bootstrap_parser.add_argument("--profile", help="Override AWS profile")
     bootstrap_parser.add_argument("--region", help="Override AWS region")
+
+    # destroy command
+    destroy_parser = subparsers.add_parser(
+        "destroy", help="Delete all bootstrapped resources"
+    )
+    destroy_parser.add_argument(
+        "-e", "--environment", default="dev", help="Target environment"
+    )
+    destroy_parser.add_argument(
+        "--dry-run", action="store_true", help="Preview without deleting resources"
+    )
+    destroy_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation prompt"
+    )
+    destroy_parser.add_argument("--profile", help="Override AWS profile")
+    destroy_parser.add_argument("--region", help="Override AWS region")
 
     # status command
     status_parser = subparsers.add_parser("status", help="Show bootstrap status")
@@ -535,6 +822,8 @@ Examples:
     # Run command
     if args.command == "bootstrap":
         cmd_bootstrap(ctx)
+    elif args.command == "destroy":
+        cmd_destroy(ctx, force=getattr(args, "force", False))
     elif args.command == "status":
         cmd_status(ctx)
 

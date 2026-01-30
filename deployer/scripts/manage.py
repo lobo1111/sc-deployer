@@ -732,15 +732,22 @@ def bootstrap_menu():
             ts = state["environments"][env].get("bootstrapped_at", "unknown")[:19]
             print(f"\n⚠️  Environment '{env}' was already bootstrapped at {ts}")
     
-    # Select action
+    # Build action choices
+    choices = [
+        questionary.Choice("[Preview] Bootstrap (dry run)", value="preview"),
+        questionary.Choice("[Run] Bootstrap" + (" (update)" if already_bootstrapped else ""), value="run"),
+        questionary.Choice("[Status] Show bootstrap status", value="status"),
+    ]
+    
+    if already_bootstrapped:
+        choices.append(questionary.Choice("[Preview] Destroy (dry run)", value="destroy_preview"))
+        choices.append(questionary.Choice("[Destroy] Remove all resources", value="destroy"))
+    
+    choices.append(questionary.Choice("<- Back", value=None))
+    
     action = questionary.select(
         "What would you like to do?",
-        choices=[
-            questionary.Choice("📋 Preview (dry run)", value="preview"),
-            questionary.Choice("🏗️  Run bootstrap" + (" (update)" if already_bootstrapped else ""), value="run"),
-            questionary.Choice("📊 Show bootstrap status", value="status"),
-            questionary.Choice("← Back", value=None),
-        ],
+        choices=choices,
         style=custom_style,
     ).ask()
     
@@ -753,6 +760,43 @@ def bootstrap_menu():
         confirm_continue()
         return bootstrap_menu()
     
+    # Handle destroy actions
+    if action in ["destroy", "destroy_preview"]:
+        dry_run = action == "destroy_preview"
+        cmd = f"bootstrap.py destroy -e {env}"
+        if dry_run:
+            cmd += " --dry-run"
+        else:
+            cmd += " --force"  # Skip double confirmation since we confirm in menu
+        
+        if not dry_run:
+            confirm = questionary.confirm(
+                f"Are you sure you want to destroy all resources in '{env}'?",
+                default=False,
+                style=custom_style
+            ).ask()
+            if not confirm:
+                print("Aborted.")
+                confirm_continue()
+                return bootstrap_menu()
+        
+        print(f"\nRunning: python deployer/scripts/{cmd}\n")
+        print("-" * 60)
+        
+        script_path = get_project_root() / "scripts" / "bootstrap.py"
+        args = ["destroy", "-e", env]
+        if dry_run:
+            args.append("--dry-run")
+        else:
+            args.append("--force")
+        
+        subprocess.run([sys.executable, str(script_path)] + args)
+        
+        print_command_hint(cmd)
+        confirm_continue()
+        return bootstrap_menu()
+    
+    # Handle bootstrap actions
     dry_run = action == "preview"
     cmd = f"bootstrap.py bootstrap -e {env}"
     if dry_run:
