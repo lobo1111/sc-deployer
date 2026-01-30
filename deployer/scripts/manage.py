@@ -235,7 +235,8 @@ def interactive_menu():
             questionary.Choice("📦 Products - Manage products & dependencies", value="products"),
             questionary.Separator(),
             questionary.Choice("🔐 Login - Authenticate with AWS SSO", value="login"),
-            questionary.Choice("🔄 Deploy - Publish & deploy products", value="deploy"),
+            questionary.Choice("🏗️  Bootstrap - Create AWS infrastructure", value="bootstrap"),
+            questionary.Choice("🚀 Deploy - Publish & deploy products", value="deploy"),
             questionary.Separator(),
             questionary.Choice("❌ Exit", value="exit"),
         ]
@@ -262,6 +263,8 @@ def interactive_menu():
             products_menu()
         elif action == "login":
             quick_login()
+        elif action == "bootstrap":
+            bootstrap_menu()
         elif action == "deploy":
             deploy_menu()
 
@@ -620,6 +623,131 @@ def quick_login():
     
     print_command_hint(f"manage.py profiles login {env}")
     confirm_continue()
+
+
+def bootstrap_menu():
+    """Bootstrap AWS infrastructure."""
+    clear_screen()
+    print_header("Bootstrap")
+    
+    configured = get_configured_profiles()
+    
+    if not configured:
+        print("No environments configured. Run Quick Start first.")
+        confirm_continue()
+        return
+    
+    # Select environment
+    env_choices = [
+        questionary.Choice(f"{name} ({cfg.get('aws_region')})", value=name)
+        for name, cfg in configured.items()
+    ]
+    env_choices.append(questionary.Choice("← Back", value=None))
+    
+    env = questionary.select(
+        "Select environment to bootstrap:",
+        choices=env_choices,
+        style=custom_style,
+    ).ask()
+    
+    if env is None:
+        return
+    
+    # Check bootstrap state
+    bootstrap_state_path = get_project_root() / ".bootstrap-state.json"
+    already_bootstrapped = False
+    
+    if bootstrap_state_path.exists():
+        with open(bootstrap_state_path) as f:
+            state = json.load(f)
+        if env in state.get("environments", {}):
+            already_bootstrapped = True
+            ts = state["environments"][env].get("bootstrapped_at", "unknown")[:19]
+            print(f"\n⚠️  Environment '{env}' was already bootstrapped at {ts}")
+    
+    # Select action
+    action = questionary.select(
+        "What would you like to do?",
+        choices=[
+            questionary.Choice("📋 Preview (dry run)", value="preview"),
+            questionary.Choice("🏗️  Run bootstrap" + (" (update)" if already_bootstrapped else ""), value="run"),
+            questionary.Choice("📊 Show bootstrap status", value="status"),
+            questionary.Choice("← Back", value=None),
+        ],
+        style=custom_style,
+    ).ask()
+    
+    if action is None:
+        return bootstrap_menu()
+    
+    if action == "status":
+        show_bootstrap_status(env)
+        print_command_hint(f"bootstrap.py status -e {env}")
+        confirm_continue()
+        return bootstrap_menu()
+    
+    dry_run = action == "preview"
+    cmd = f"bootstrap.py bootstrap -e {env}"
+    if dry_run:
+        cmd += " --dry-run"
+    
+    print(f"\nRunning: python deployer/scripts/{cmd}\n")
+    print("-" * 60)
+    
+    script_path = get_project_root() / "scripts" / "bootstrap.py"
+    args = ["bootstrap", "-e", env]
+    if dry_run:
+        args.append("--dry-run")
+    
+    subprocess.run([sys.executable, str(script_path)] + args)
+    
+    print_command_hint(cmd)
+    confirm_continue()
+
+
+def show_bootstrap_status(env: str):
+    """Show bootstrap status for an environment."""
+    print_header(f"Bootstrap Status: {env}")
+    
+    bootstrap_state_path = get_project_root() / ".bootstrap-state.json"
+    
+    if not bootstrap_state_path.exists():
+        print("Not bootstrapped yet.")
+        return
+    
+    with open(bootstrap_state_path) as f:
+        state = json.load(f)
+    
+    env_state = state.get("environments", {}).get(env, {})
+    
+    if not env_state:
+        print(f"Environment '{env}' not bootstrapped yet.")
+        return
+    
+    print(f"Account:      {env_state.get('account_id', '-')}")
+    print(f"Region:       {env_state.get('region', '-')}")
+    print(f"Bootstrapped: {env_state.get('bootstrapped_at', '-')}")
+    
+    bucket = env_state.get("template_bucket", {})
+    print(f"\n📦 Template Bucket: {bucket.get('name', '-')}")
+    
+    print("\n📦 ECR Repositories:")
+    for name, info in env_state.get("ecr_repositories", {}).items():
+        print(f"   • {name}: {info.get('uri', '-')}")
+    if not env_state.get("ecr_repositories"):
+        print("   (none)")
+    
+    print("\n📁 Portfolios:")
+    for name, info in env_state.get("portfolios", {}).items():
+        print(f"   • {name}: {info.get('id', '-')}")
+    if not env_state.get("portfolios"):
+        print("   (none)")
+    
+    print("\n📦 Products:")
+    for name, info in env_state.get("products", {}).items():
+        print(f"   • {name}: {info.get('id', '-')}")
+    if not env_state.get("products"):
+        print("   (none)")
 
 
 def deploy_menu():
