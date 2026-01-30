@@ -85,11 +85,67 @@ def get_current_commit() -> str:
             ["git", "rev-parse", "HEAD"],
             capture_output=True,
             text=True,
-            cwd=get_project_root(),
+            cwd=get_repo_root(),
         )
         return result.stdout.strip()
     except Exception:
         return "unknown"
+
+
+def has_uncommitted_changes() -> bool:
+    """Check if there are uncommitted changes in git."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=get_repo_root(),
+        )
+        return bool(result.stdout.strip())
+    except Exception:
+        return False
+
+
+def get_uncommitted_files() -> list[str]:
+    """Get list of uncommitted files."""
+    try:
+        result = subprocess.run(
+            ["git", "status", "--porcelain"],
+            capture_output=True,
+            text=True,
+            cwd=get_repo_root(),
+        )
+        files = []
+        for line in result.stdout.strip().split("\n"):
+            if line:
+                # Format: "XY filename" where X=index, Y=worktree
+                files.append(line[3:] if len(line) > 3 else line)
+        return files
+    except Exception:
+        return []
+
+
+def commit_all_changes(message: str) -> bool:
+    """Commit all changes with the given message."""
+    try:
+        # Stage all changes
+        subprocess.run(
+            ["git", "add", "-A"],
+            capture_output=True,
+            cwd=get_repo_root(),
+            check=True,
+        )
+        
+        # Commit
+        result = subprocess.run(
+            ["git", "commit", "-m", message],
+            capture_output=True,
+            text=True,
+            cwd=get_repo_root(),
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
 
 
 # ============== VALIDATION ==============
@@ -540,10 +596,39 @@ def cmd_plan(ctx: DeployContext):
         print("\nNothing to deploy.")
 
 
-def cmd_publish(ctx: DeployContext, products: list[str] | None = None):
+def cmd_publish(ctx: DeployContext, products: list[str] | None = None, auto_commit: bool = True):
     """Publish changed products."""
     if not cmd_validate(ctx):
         return
+
+    # Check for uncommitted changes
+    if has_uncommitted_changes():
+        uncommitted = get_uncommitted_files()
+        print(f"\n⚠️  Uncommitted changes detected ({len(uncommitted)} files):")
+        for f in uncommitted[:10]:
+            print(f"   • {f}")
+        if len(uncommitted) > 10:
+            print(f"   ... and {len(uncommitted) - 10} more")
+        
+        if ctx.dry_run:
+            print("\n[DRY RUN] Would commit changes before publishing")
+        elif auto_commit:
+            print("\nCommitting changes...")
+            # Generate commit message based on products being published
+            if products:
+                commit_msg = f"Publish: {', '.join(products)}"
+            else:
+                commit_msg = "Publish: auto-commit before publish"
+            
+            if commit_all_changes(commit_msg):
+                print(f"✅ Committed: {commit_msg}")
+            else:
+                print("❌ Failed to commit changes")
+                print("   Please commit manually and try again.")
+                return
+        else:
+            print("\n❌ Please commit changes before publishing.")
+            return
 
     if products:
         to_publish = set(products)
