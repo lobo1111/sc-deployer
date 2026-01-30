@@ -1,0 +1,61 @@
+settings:
+  state_file: .bootstrap-state.json
+
+profiles:
+  dev:
+    aws_profile: my-aws-dev
+    aws_region: eu-west-1
+    account_id: "111111111111"
+  prod:
+    aws_profile: my-aws-prod
+    aws_region: eu-west-1
+    account_id: "222222222222"
+
+# S3 bucket for CloudFormation templates
+template_bucket:
+  name_prefix: sc-templates
+  versioning: true
+  encryption: AES256
+
+# ECR repositories
+ecr_repositories:
+  - name: api-service
+    scan_on_push: true
+    image_tag_mutability: IMMUTABLE
+  - name: worker-service
+    scan_on_push: true
+    image_tag_mutability: IMMUTABLE
+
+# Service Catalog portfolios
+portfolios:
+  infrastructure:
+    display_name: Infrastructure Services
+    description: Core infrastructure components (VPC, networking, security)
+    provider_name: Platform Team
+    principals:
+      - arn:aws:iam::${account_id}:role/DevOpsRole
+      - arn:aws:iam::${account_id}:role/DeveloperRole
+    tags:
+      Team: platform
+      CostCenter: infra
+
+  data-services:
+    display_name: Data Services
+    description: Database and storage products
+    provider_name: Platform Team
+    principals:
+      - arn:aws:iam::${account_id}:role/DevOpsRole
+    tags:
+      Team: platform
+      CostCenter: data
+
+  application-services:
+    display_name: Application Services
+    description: Application runtime products
+    provider_name: Platform Team
+    principals:
+      - arn:aws:iam::${account_id}:role/DevOpsRole
+      - arn:aws:iam::${account_id}:role/DeveloperRole
+    tags:
+      Team: platform
+      CostCenter: apps

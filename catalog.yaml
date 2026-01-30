@@ -1,0 +1,55 @@
+settings:
+  state_file: .deploy-state.json
+  state_backend: local  # local | s3
+  state_bucket: my-deploy-state-bucket
+  version_format: "%Y.%m.%d.%H%M%S"
+
+profiles:
+  dev:
+    aws_profile: my-aws-dev
+    aws_region: eu-west-1
+  prod:
+    aws_profile: my-aws-prod
+    aws_region: eu-west-1
+
+products:
+  networking:
+    path: products/networking
+    portfolio: infrastructure
+    dependencies: []
+    outputs:
+      - VpcId
+      - PublicSubnetIds
+      - PrivateSubnetIds
+      - SecurityGroupId
+
+  database:
+    path: products/database
+    portfolio: data-services
+    dependencies:
+      - networking
+    parameter_mapping:
+      VpcId: networking.VpcId
+      SubnetIds: networking.PrivateSubnetIds
+      SecurityGroupId: networking.SecurityGroupId
+    outputs:
+      - DatabaseEndpoint
+      - DatabasePort
+      - DatabaseSecretArn
+
+  api:
+    path: products/api
+    portfolio: application-services
+    ecr_repository: api-service
+    dependencies:
+      - networking
+      - database
+    parameter_mapping:
+      VpcId: networking.VpcId
+      SubnetIds: networking.PrivateSubnetIds
+      DbEndpoint: database.DatabaseEndpoint
+      DbPort: database.DatabasePort
+      DbSecretArn: database.DatabaseSecretArn
+    outputs:
+      - ApiEndpoint
+      - ApiKey

@@ -1,0 +1,44 @@
+name: database
+description: RDS PostgreSQL database
+portfolio: data-services
+
+parameters:
+  VpcId:
+    type: String
+    description: VPC to deploy into
+    required: true
+
+  SubnetIds:
+    type: CommaDelimitedList
+    description: Subnets for DB subnet group
+    required: true
+
+  SecurityGroupId:
+    type: String
+    description: Security group for DB access
+    required: true
+
+  InstanceClass:
+    type: String
+    description: RDS instance class
+    default: db.t3.micro
+    required: false
+
+  DatabaseName:
+    type: String
+    description: Initial database name
+    default: appdb
+    required: false
+
+outputs:
+  DatabaseEndpoint:
+    description: RDS endpoint address
+    export: true
+
+  DatabasePort:
+    description: RDS port
+    export: true
+
+  DatabaseSecretArn:
+    description: Secrets Manager ARN for credentials
+    export: true
