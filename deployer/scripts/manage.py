@@ -1406,7 +1406,7 @@ Outputs:
     
     # Update catalog.yaml
     product_config = {
-        "path": f"products/{name}",
+        "path": name,
         "portfolio": portfolio,
         "dependencies": dependencies,
     }
