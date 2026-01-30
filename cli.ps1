@@ -100,7 +100,7 @@ function Enable-VirtualEnv {
 function Test-Requirements {
     param($PythonCmd)
     
-    $reqFile = Join-Path $ScriptRoot "requirements.txt"
+    $reqFile = Join-Path $ScriptRoot "deployer\requirements.txt"
     if (-not (Test-Path $reqFile)) {
         return $true
     }
