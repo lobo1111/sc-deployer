@@ -41,11 +41,29 @@ sc-deployer/
 ```bash
 # Install dependencies
 pip install -r requirements.txt
-
-# Configure AWS profiles in bootstrap.yaml and catalog.yaml
 ```
 
 ## Usage
+
+### 0. Configure Profiles
+
+```bash
+# Scan available AWS profiles from ~/.aws/config
+python scripts/manage.py profiles scan
+
+# Add a profile to profiles.yaml (interactive)
+python scripts/manage.py profiles add dev
+python scripts/manage.py profiles add prod
+
+# List configured profiles
+python scripts/manage.py profiles list
+
+# Login via SSO
+python scripts/manage.py profiles login dev
+
+# Check identity
+python scripts/manage.py profiles whoami dev
+```
 
 ### 1. Bootstrap (one-time per environment)
 
@@ -94,6 +112,22 @@ python scripts/deploy.py publish -e dev -p database
 python scripts/deploy.py deploy -e prod --profile my-prod --region us-east-1
 ```
 
+### 3. Add Portfolios & Products
+
+```bash
+# List existing portfolios
+python scripts/manage.py portfolios list
+
+# Add a new portfolio (interactive)
+python scripts/manage.py portfolios add security -e dev
+
+# List existing products
+python scripts/manage.py products list
+
+# Add a new product (interactive, creates directory and templates)
+python scripts/manage.py products add monitoring
+```
+
 ## Configuration
 
 ### profiles.yaml (shared)
@@ -135,6 +169,9 @@ portfolios:
 ### catalog.yaml
 
 ```yaml
+settings:
+  profiles_file: profiles.yaml
+
 products:
   networking:
     path: products/networking
