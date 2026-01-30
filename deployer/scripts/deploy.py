@@ -502,8 +502,74 @@ def publish_product(ctx: DeployContext, product_name: str) -> str:
 # ============== DEPLOY ==============
 
 
+def get_provisioning_artifact_id(ctx: DeployContext, product_id: str, version: str) -> str:
+    """Get the provisioning artifact ID for a specific version."""
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    
+    response = sc.list_provisioning_artifacts(ProductId=product_id)
+    for artifact in response.get("ProvisioningArtifactDetails", []):
+        if artifact["Name"] == version:
+            return artifact["Id"]
+    
+    raise ValueError(f"Provisioning artifact not found for version: {version}")
+
+
+def wait_for_provisioned_product(ctx: DeployContext, record_id: str, timeout: int = 600) -> dict:
+    """Wait for a provisioned product operation to complete."""
+    import time
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        response = sc.describe_record(Id=record_id)
+        status = response["RecordDetail"]["Status"]
+        
+        if status == "SUCCEEDED":
+            # Get outputs from record outputs
+            outputs = {}
+            for output in response["RecordDetail"].get("RecordOutputs", []):
+                outputs[output["OutputKey"]] = output["OutputValue"]
+            return {"status": "SUCCEEDED", "outputs": outputs}
+        elif status in ["FAILED", "IN_PROGRESS_IN_ERROR"]:
+            errors = response["RecordDetail"].get("RecordErrors", [])
+            error_msg = "; ".join([e.get("Description", "Unknown error") for e in errors])
+            return {"status": "FAILED", "error": error_msg}
+        
+        time.sleep(10)
+    
+    return {"status": "TIMEOUT", "error": "Operation timed out"}
+
+
+def get_provisioned_product_outputs(ctx: DeployContext, provisioned_product_id: str) -> dict:
+    """Get outputs from a provisioned product's CloudFormation stack."""
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    cfn = session.client("cloudformation")
+    
+    # Get the CloudFormation stack ID from the provisioned product
+    try:
+        response = sc.describe_provisioned_product(Id=provisioned_product_id)
+        pp_detail = response.get("ProvisionedProductDetail", {})
+        
+        # The physical ID contains the CloudFormation stack ARN/ID
+        stack_id = pp_detail.get("PhysicalId")
+        if not stack_id:
+            return {}
+        
+        # Get outputs from CloudFormation
+        stack_response = cfn.describe_stacks(StackName=stack_id)
+        outputs = {}
+        for output in stack_response["Stacks"][0].get("Outputs", []):
+            outputs[output["OutputKey"]] = output["OutputValue"]
+        return outputs
+    except Exception:
+        return {}
+
+
 def deploy_product(ctx: DeployContext, product_name: str) -> dict:
-    """Deploy a published product via CloudFormation."""
+    """Deploy a published product via Service Catalog provisioning."""
     config = ctx.catalog["products"][product_name]
     env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
     product_state = env_state.get(product_name, {})
@@ -512,8 +578,14 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
     if not version:
         raise ValueError(f"Product '{product_name}' has not been published yet")
 
-    stack_name = f"{ctx.environment}-{product_name}"
-    template_path = get_products_root() / config["path"] / "template.yaml"
+    # Get product ID from bootstrap state
+    env_bootstrap = ctx.bootstrap_state.get("environments", {}).get(ctx.environment, {})
+    product_id = env_bootstrap.get("products", {}).get(product_name, {}).get("id")
+    
+    if not product_id:
+        raise ValueError(f"Product '{product_name}' not found in bootstrap state. Run bootstrap first.")
+
+    provisioned_product_name = f"{ctx.environment}-{product_name}"
 
     # Resolve parameters from dependencies
     parameters = resolve_parameters(ctx, product_name)
@@ -523,7 +595,7 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
 
     print(f"\n  Deploying: {product_name}")
     print(f"    Version: {version}")
-    print(f"    Stack:   {stack_name}")
+    print(f"    Provisioned Product: {provisioned_product_name}")
     if parameters:
         print(f"    Params:  {list(parameters.keys())}")
 
@@ -532,74 +604,107 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
         return {}
 
     session = get_session(ctx)
-    cfn = session.client("cloudformation")
+    sc = session.client("servicecatalog")
 
-    # Build CloudFormation parameters
-    cfn_params = [
-        {"ParameterKey": k, "ParameterValue": str(v)} for k, v in parameters.items()
+    # Get provisioning artifact ID for the version
+    artifact_id = get_provisioning_artifact_id(ctx, product_id, version)
+
+    # Build Service Catalog parameters
+    sc_params = [
+        {"Key": k, "Value": str(v)} for k, v in parameters.items()
     ]
 
-    with open(template_path) as f:
-        template_body = f.read()
-
-    try:
-        # Try update first
-        cfn.update_stack(
-            StackName=stack_name,
-            TemplateBody=template_body,
-            Parameters=cfn_params,
-            Capabilities=["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"],
-            Tags=[
-                {"Key": "Environment", "Value": ctx.environment},
-                {"Key": "Product", "Value": product_name},
-                {"Key": "Version", "Value": version},
-                {"Key": "ManagedBy", "Value": "sc-deployer"},
-            ],
-        )
-        print("    Updating stack...")
-        waiter = cfn.get_waiter("stack_update_complete")
-    except cfn.exceptions.ClientError as e:
-        error_message = str(e)
-        if "does not exist" in error_message:
-            cfn.create_stack(
-                StackName=stack_name,
-                TemplateBody=template_body,
-                Parameters=cfn_params,
-                Capabilities=["CAPABILITY_IAM", "CAPABILITY_NAMED_IAM"],
+    # Check if already provisioned
+    existing_pp_id = product_state.get("provisioned_product_id")
+    record_id = None
+    
+    if existing_pp_id:
+        # Try to update existing provisioned product
+        try:
+            # Verify it still exists
+            sc.describe_provisioned_product(Id=existing_pp_id)
+            
+            response = sc.update_provisioned_product(
+                ProvisionedProductId=existing_pp_id,
+                ProductId=product_id,
+                ProvisioningArtifactId=artifact_id,
+                ProvisioningParameters=sc_params,
                 Tags=[
                     {"Key": "Environment", "Value": ctx.environment},
-                    {"Key": "Product", "Value": product_name},
-                    {"Key": "Version", "Value": version},
                     {"Key": "ManagedBy", "Value": "sc-deployer"},
                 ],
             )
-            print("    Creating stack...")
-            waiter = cfn.get_waiter("stack_create_complete")
-        elif "No updates" in error_message:
-            print("    No changes to deploy")
-            # Still fetch outputs
-            response = cfn.describe_stacks(StackName=stack_name)
-            outputs = {}
-            for output in response["Stacks"][0].get("Outputs", []):
-                outputs[output["OutputKey"]] = output["OutputValue"]
-            return outputs
-        else:
+            record_id = response["RecordDetail"]["RecordId"]
+            print("    Updating provisioned product...")
+        except sc.exceptions.ResourceNotFoundException:
+            existing_pp_id = None  # Will provision new
+        except Exception as e:
+            if "No updates" in str(e) or "AVAILABLE" in str(e):
+                print("    No changes to deploy")
+                outputs = get_provisioned_product_outputs(ctx, existing_pp_id)
+                return outputs
             raise
+    
+    if not existing_pp_id:
+        # Provision new product
+        try:
+            response = sc.provision_product(
+                ProductId=product_id,
+                ProvisioningArtifactId=artifact_id,
+                ProvisionedProductName=provisioned_product_name,
+                ProvisioningParameters=sc_params,
+                Tags=[
+                    {"Key": "Environment", "Value": ctx.environment},
+                    {"Key": "ManagedBy", "Value": "sc-deployer"},
+                ],
+            )
+            record_id = response["RecordDetail"]["RecordId"]
+            existing_pp_id = response["RecordDetail"]["ProvisionedProductId"]
+            print("    Provisioning new product...")
+        except sc.exceptions.DuplicateResourceException:
+            # Product with this name already exists, find it
+            search_response = sc.search_provisioned_products(
+                Filters={"SearchQuery": [f"name:{provisioned_product_name}"]}
+            )
+            for pp in search_response.get("ProvisionedProducts", []):
+                if pp["Name"] == provisioned_product_name:
+                    existing_pp_id = pp["Id"]
+                    # Update it instead
+                    response = sc.update_provisioned_product(
+                        ProvisionedProductId=existing_pp_id,
+                        ProductId=product_id,
+                        ProvisioningArtifactId=artifact_id,
+                        ProvisioningParameters=sc_params,
+                        Tags=[
+                            {"Key": "Environment", "Value": ctx.environment},
+                            {"Key": "ManagedBy", "Value": "sc-deployer"},
+                        ],
+                    )
+                    record_id = response["RecordDetail"]["RecordId"]
+                    print("    Updating existing provisioned product...")
+                    break
+            else:
+                raise ValueError(f"Could not find existing provisioned product: {provisioned_product_name}")
 
     # Wait for completion
-    try:
-        waiter.wait(StackName=stack_name, WaiterConfig={"Delay": 10, "MaxAttempts": 60})
-    except Exception as e:
-        print(f"    Stack operation failed: {e}")
-        raise
-
-    print("    Stack operation complete")
-
-    # Fetch outputs
-    response = cfn.describe_stacks(StackName=stack_name)
-    outputs = {}
-    for output in response["Stacks"][0].get("Outputs", []):
-        outputs[output["OutputKey"]] = output["OutputValue"]
+    if record_id:
+        result = wait_for_provisioned_product(ctx, record_id)
+        
+        if result["status"] == "SUCCEEDED":
+            print("    Provisioning complete")
+            outputs = result.get("outputs", {})
+            
+            # If no outputs from record, try to get from CloudFormation
+            if not outputs and existing_pp_id:
+                outputs = get_provisioned_product_outputs(ctx, existing_pp_id)
+        elif result["status"] == "FAILED":
+            print(f"    Provisioning FAILED: {result.get('error', 'Unknown error')}")
+            raise RuntimeError(f"Provisioning failed: {result.get('error')}")
+        else:
+            print(f"    Provisioning timed out")
+            raise RuntimeError("Provisioning timed out")
+    else:
+        outputs = {}
 
     # Update state
     current_commit = get_current_commit()
@@ -612,7 +717,8 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
             "deployed_at": datetime.now(timezone.utc)
             .isoformat()
             .replace("+00:00", "Z"),
-            "stack_name": stack_name,
+            "provisioned_product_id": existing_pp_id,
+            "provisioned_product_name": provisioned_product_name,
             "outputs": outputs,
         }
     )
@@ -621,6 +727,61 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
         print(f"    Outputs: {list(outputs.keys())}")
 
     return outputs
+
+
+def terminate_product(ctx: DeployContext, product_name: str) -> bool:
+    """Terminate a provisioned product."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    product_state = env_state.get(product_name, {})
+    
+    pp_id = product_state.get("provisioned_product_id")
+    pp_name = product_state.get("provisioned_product_name", f"{ctx.environment}-{product_name}")
+    
+    print(f"\n  Terminating: {product_name}")
+    print(f"    Provisioned Product: {pp_name}")
+    
+    if ctx.dry_run:
+        print("    [DRY RUN] Skipping")
+        return True
+    
+    if not pp_id:
+        print("    Not deployed (no provisioned product ID)")
+        return True
+    
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    
+    try:
+        response = sc.terminate_provisioned_product(
+            ProvisionedProductId=pp_id,
+            TerminateToken=f"terminate-{product_name}-{datetime.now().strftime('%Y%m%d%H%M%S')}"
+        )
+        record_id = response["RecordDetail"]["RecordId"]
+        print("    Terminating...")
+        
+        # Wait for termination
+        result = wait_for_provisioned_product(ctx, record_id)
+        
+        if result["status"] == "SUCCEEDED":
+            print("    Terminated successfully")
+            # Clear state
+            if product_name in ctx.state.get("environments", {}).get(ctx.environment, {}):
+                product_state = ctx.state["environments"][ctx.environment][product_name]
+                product_state.pop("provisioned_product_id", None)
+                product_state.pop("provisioned_product_name", None)
+                product_state.pop("deployed_commit", None)
+                product_state.pop("deployed_at", None)
+                product_state.pop("outputs", None)
+            return True
+        else:
+            print(f"    Termination failed: {result.get('error', 'Unknown')}")
+            return False
+    except sc.exceptions.ResourceNotFoundException:
+        print("    Not found (already terminated)")
+        return True
+    except Exception as e:
+        print(f"    Error: {e}")
+        return False
 
 
 # ============== COMMANDS ==============
@@ -771,6 +932,45 @@ def cmd_deploy(ctx: DeployContext, products: list[str] | None = None):
     print("\nDeployment complete!")
 
 
+def cmd_terminate(ctx: DeployContext, products: list[str] | None = None, force: bool = False):
+    """Terminate deployed products."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    
+    # Get products to terminate
+    if products:
+        to_terminate = set(products)
+    else:
+        # Find all deployed products
+        to_terminate = set()
+        for name in ctx.catalog["products"]:
+            product_state = env_state.get(name, {})
+            if product_state.get("provisioned_product_id"):
+                to_terminate.add(name)
+    
+    if not to_terminate:
+        print("\nNo deployed products to terminate.")
+        return
+    
+    # Reverse topological order (dependents first)
+    order = topological_sort(ctx, to_terminate)
+    order.reverse()
+    
+    print(f"\nTerminating {len(order)} product(s): {' -> '.join(order)}")
+    
+    if not ctx.dry_run and not force:
+        response = input("Are you sure? Type 'yes' to confirm: ")
+        if response.lower() != "yes":
+            print("Aborted.")
+            return
+    
+    for product in order:
+        terminate_product(ctx, product)
+        if not ctx.dry_run:
+            save_deploy_state(ctx.catalog, ctx.state)
+    
+    print("\nTermination complete!")
+
+
 def cmd_status(ctx: DeployContext):
     """Show publish/deploy status."""
     env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
@@ -828,6 +1028,7 @@ Examples:
   python deploy.py publish -e dev --dry-run
   python deploy.py publish -e dev
   python deploy.py deploy -e dev
+  python deploy.py terminate -e dev --force
   python deploy.py status -e dev
         """,
     )
@@ -860,12 +1061,23 @@ Examples:
     )
 
     # deploy
-    deploy_parser = subparsers.add_parser("deploy", help="Deploy products")
+    deploy_parser = subparsers.add_parser("deploy", help="Deploy products via Service Catalog")
     add_common_args(deploy_parser)
     deploy_parser.add_argument(
         "-p", "--product", action="append", help="Specific product(s)"
     )
     deploy_parser.add_argument("--dry-run", action="store_true")
+
+    # terminate
+    terminate_parser = subparsers.add_parser("terminate", help="Terminate provisioned products")
+    add_common_args(terminate_parser)
+    terminate_parser.add_argument(
+        "-p", "--product", action="append", help="Specific product(s)"
+    )
+    terminate_parser.add_argument("--dry-run", action="store_true")
+    terminate_parser.add_argument(
+        "--force", action="store_true", help="Skip confirmation"
+    )
 
     # status
     status_parser = subparsers.add_parser("status", help="Show status")
@@ -907,6 +1119,8 @@ Examples:
         cmd_publish(ctx, getattr(args, "product", None), force=getattr(args, "force", False))
     elif args.command == "deploy":
         cmd_deploy(ctx, getattr(args, "product", None))
+    elif args.command == "terminate":
+        cmd_terminate(ctx, getattr(args, "product", None), force=getattr(args, "force", False))
     elif args.command == "status":
         cmd_status(ctx)
 
