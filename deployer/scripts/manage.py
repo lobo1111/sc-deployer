@@ -92,12 +92,20 @@ def get_aws_credentials_path() -> Path:
 def scan_aws_profiles() -> list[dict]:
     """Scan available AWS profiles from ~/.aws/config and credentials."""
     profiles = []
+    sso_sessions = {}
     
     config_path = get_aws_config_path()
     if config_path.exists():
         config = configparser.ConfigParser()
         config.read(config_path)
         
+        # First pass: collect sso-session configurations
+        for section in config.sections():
+            if section.startswith("sso-session "):
+                session_name = section.replace("sso-session ", "")
+                sso_sessions[session_name] = dict(config[section])
+        
+        # Second pass: collect profiles
         for section in config.sections():
             if section.startswith("profile "):
                 profile_name = section.replace("profile ", "")
@@ -107,13 +115,31 @@ def scan_aws_profiles() -> list[dict]:
                 continue
             
             profile_data = dict(config[section])
+            
+            # Check for SSO - either direct sso_start_url or sso_session reference
+            is_sso = False
+            sso_start_url = profile_data.get("sso_start_url", "")
+            sso_account_id = profile_data.get("sso_account_id", "")
+            
+            # Legacy SSO format: sso_start_url directly in profile
+            if "sso_start_url" in profile_data:
+                is_sso = True
+            
+            # New SSO format: sso_session reference
+            if "sso_session" in profile_data:
+                is_sso = True
+                session_name = profile_data["sso_session"]
+                if session_name in sso_sessions:
+                    sso_start_url = sso_sessions[session_name].get("sso_start_url", "")
+            
             profile_info = {
                 "name": profile_name,
                 "region": profile_data.get("region", ""),
-                "sso_start_url": profile_data.get("sso_start_url", ""),
-                "sso_account_id": profile_data.get("sso_account_id", ""),
+                "sso_start_url": sso_start_url,
+                "sso_account_id": sso_account_id,
                 "sso_role_name": profile_data.get("sso_role_name", ""),
-                "is_sso": "sso_start_url" in profile_data,
+                "sso_session": profile_data.get("sso_session", ""),
+                "is_sso": is_sso,
                 "source": "config",
             }
             profiles.append(profile_info)
