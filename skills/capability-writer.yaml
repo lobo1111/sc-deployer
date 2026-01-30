@@ -1,0 +1,114 @@
+# Capability Writer Skill
+# Updates CAPABILITY.md documentation
+
+name: capability-writer
+description: |
+  Updates the CAPABILITY.md document to reflect changes made to a product.
+  Ensures documentation always matches the current state of the product.
+
+trigger:
+  type: routed
+  from: implementer
+  input: modified_files
+
+context:
+  required:
+    - modified_files
+    - work_orders
+    - current_capability  # Existing CAPABILITY.md
+    - new_template  # Updated template.yaml
+    - product_config  # product.yaml
+  optional:
+    - capability_template  # Standard structure
+
+behavior:
+  analysis:
+    1_detect_changes:
+      compare:
+        - old_template vs new_template
+      identify:
+        - new_resources
+        - removed_resources
+        - modified_resources
+        - new_parameters
+        - new_outputs
+        - changed_dependencies
+    
+    2_map_to_capabilities:
+      for_each: change
+      determine:
+        - business_capability_impact
+        - functional_capability_impact
+        - technical_implementation_impact
+        - interface_changes
+        - new_constraints
+
+  documentation:
+    update_sections:
+      business_context:
+        when: fundamental_purpose_changed
+        action: rewrite_section
+      
+      functional_capabilities:
+        when: user_facing_behavior_changed
+        action: update_capability_table
+        format: |
+          | Capability | Description |
+          |------------|-------------|
+          | {name} | {description} |
+      
+      technical_implementation:
+        when: resources_changed
+        action: update_bullet_list
+        include:
+          - resource_type
+          - purpose
+          - key_configuration
+      
+      interfaces:
+        inputs:
+          when: parameters_changed
+          action: update_parameters_table
+        outputs:
+          when: outputs_changed
+          action: update_outputs_table
+        dependencies:
+          when: dependencies_changed
+          action: update_dependencies_list
+      
+      constraints:
+        when: new_limitations_identified
+        action: add_to_limitations_list
+
+  quality:
+    rules:
+      - Document current state only, not history
+      - No references to work orders or issues
+      - Use business language in functional sections
+      - Use technical language in implementation sections
+      - Keep descriptions concise but complete
+      - Update all affected sections atomically
+    
+    validation:
+      - All outputs documented
+      - All dependencies documented
+      - All parameters documented
+      - No placeholder text
+      - Consistent formatting
+
+  commit:
+    action: git_commit
+    message: "docs: update {product} CAPABILITY.md"
+    scope: only_capability_file
+
+outputs:
+  - updated_capability: path to CAPABILITY.md
+  - changes_summary: what was updated
+  - commit_sha: git commit hash
+
+transitions:
+  - to: test-writer
+    when: capability_updated
+    pass: work_orders, modified_files
+  - to: pr-reviewer
+    when: no_tests_needed

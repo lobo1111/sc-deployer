@@ -1,0 +1,116 @@
+# Deployer Skill
+# Executes deployments to environments
+
+name: deployer
+description: |
+  Handles publishing and deploying products to AWS environments.
+  Automatically deploys to dev/stage, requires approval for prod.
+
+trigger:
+  type: event
+  source: github
+  events:
+    - push to develop  # Deploy to dev
+    - push to main     # Deploy to stage
+    - workflow_dispatch with approval  # Deploy to prod
+
+context:
+  required:
+    - target_environment
+    - changed_products
+    - deploy_state
+    - bootstrap_state
+  optional:
+    - force_deploy  # Override change detection
+
+behavior:
+  environment_rules:
+    dev:
+      trigger: merge_to_develop
+      auto_deploy: true
+      approval_required: false
+      tests_required: unit
+    
+    stage:
+      trigger: merge_to_main
+      auto_deploy: true
+      approval_required: false
+      tests_required: unit, integration
+    
+    prod:
+      trigger: manual_with_approval
+      auto_deploy: false
+      approval_required: true
+      tests_required: stage_integration_passed
+
+  deployment_flow:
+    1_validate:
+      action: run_validation
+      command: "python deployer/scripts/deploy.py validate -e {environment}"
+      on_failure: abort_with_error
+    
+    2_plan:
+      action: show_plan
+      command: "python deployer/scripts/deploy.py plan -e {environment}"
+      output: products_to_deploy
+    
+    3_publish:
+      action: publish_products
+      command: "python deployer/scripts/deploy.py publish -e {environment}"
+      for_each: changed_product
+      on_failure: abort_with_error
+    
+    4_deploy:
+      action: deploy_products
+      command: "python deployer/scripts/deploy.py deploy -e {environment}"
+      order: topological  # Dependencies first
+      on_failure: rollback_or_alert
+    
+    5_verify:
+      action: run_tests
+      dev:
+        skip: true  # Fast iteration
+      stage:
+        run: integration_tests
+        command: "pytest tests/integration/ -v --env=stage"
+      prod:
+        run: smoke_tests
+        command: "pytest tests/integration/ -v --env=prod -m smoke"
+    
+    6_report:
+      action: report_status
+      notify:
+        - deployment_complete
+        - test_results
+        - next_steps
+
+  error_handling:
+    on_publish_failure:
+      - capture_error
+      - notify_team
+      - abort_deployment
+    
+    on_deploy_failure:
+      - capture_error
+      - check_partial_state
+      - notify_team
+      - suggest_remediation
+
+  rollback:
+    available: true
+    command: "python deployer/scripts/deploy.py terminate -e {environment} --product {product}"
+    requires_confirmation: true
+
+outputs:
+  - deployment_result: success | failed | partial
+  - deployed_products: list with versions
+  - test_results: pass | fail with details
+  - environment_state: updated deploy state
+
+transitions:
+  - to: release-manager
+    when: stage_deployment_successful
+    condition: prod_deployment_pending
+  - to: guide
+    when: deployment_complete
+    pass: deployment_summary

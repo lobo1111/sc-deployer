@@ -1,0 +1,98 @@
+# Guide Skill
+# Routes human interactions to the correct workflow interaction point
+
+name: guide
+description: |
+  Analyzes human input and guides them to the appropriate interaction point
+  in the development workflow. Acts as the entry point for all human interactions.
+
+trigger:
+  type: human_message
+  conditions:
+    - any_input
+
+context:
+  required:
+    - current_workflow_state
+    - pending_items  # PRs, work orders, releases awaiting action
+  optional:
+    - conversation_history
+
+behavior:
+  analyze_intent:
+    patterns:
+      new_requirement:
+        - "I need..."
+        - "We should add..."
+        - "Can we have..."
+        - "Business wants..."
+        - "New feature..."
+      work_order_feedback:
+        - "Change the..."
+        - "Add another..."
+        - "Remove..."
+        - "Looks good"
+        - "Approved"
+      pr_review:
+        - "PR..."
+        - "Code looks..."
+        - "Merge..."
+        - "Changes needed..."
+      release_approval:
+        - "Deploy to prod..."
+        - "Release..."
+        - "Go live..."
+        - "Approve production..."
+      status_inquiry:
+        - "What's the status..."
+        - "Where are we..."
+        - "Show me..."
+
+  routing:
+    new_requirement:
+      target: requirement-shaper
+      message: "I'll help you shape this requirement. Let me ask some clarifying questions."
+    
+    work_order_feedback:
+      target: work-order-planner
+      message: "I'll update the work orders based on your feedback."
+    
+    pr_review:
+      target: pr-reviewer
+      message: "Let me show you the PR summary for your review."
+    
+    release_approval:
+      target: release-manager
+      message: "Here's the release summary for production deployment."
+    
+    status_inquiry:
+      action: show_status
+      message: |
+        Here's the current status. What would you like to do?
+        1. Define a new requirement
+        2. Review pending work orders
+        3. Review open PRs
+        4. Approve production deployment
+    
+    unclear:
+      action: clarify
+      message: |
+        I'm not sure what you'd like to do. Are you:
+        1. Defining a new business requirement?
+        2. Reviewing work orders?
+        3. Reviewing a pull request?
+        4. Approving a production release?
+
+outputs:
+  - routed_to: skill_name
+  - context_passed: relevant_data
+
+transitions:
+  - to: requirement-shaper
+    when: intent == "new_requirement"
+  - to: work-order-planner
+    when: intent == "work_order_feedback"
+  - to: pr-reviewer
+    when: intent == "pr_review"
+  - to: release-manager
+    when: intent == "release_approval"

@@ -1,0 +1,129 @@
+# Test Writer Skill
+# Creates unit and integration tests for products
+
+name: test-writer
+description: |
+  Creates or updates tests to verify product changes.
+  Writes unit tests for template validation and integration
+  tests for deployed resource verification.
+
+trigger:
+  type: routed
+  from: capability-writer
+  input: work_orders, modified_files
+
+context:
+  required:
+    - work_orders
+    - modified_files
+    - product_template  # template.yaml
+    - product_config  # product.yaml
+    - existing_tests  # Current test files
+  optional:
+    - test_patterns  # Common test patterns
+
+behavior:
+  analysis:
+    1_identify_test_needs:
+      for_each: change
+      determine:
+        unit_tests:
+          - new_resources_to_verify
+          - security_properties_to_check
+          - parameter_validations
+          - output_presence
+        integration_tests:
+          - deployed_resources_to_verify
+          - connectivity_to_test
+          - functionality_to_validate
+  
+  unit_test_generation:
+    location: "tests/unit/test_{product}.py"
+    
+    test_categories:
+      resource_presence:
+        pattern: |
+          def test_template_has_{resource_type}(self, load_template):
+              template = load_template("{product}")
+              resources = template.get("Resources", {})
+              types = {r.get("Type") for r in resources.values()}
+              assert "{aws_resource_type}" in types
+      
+      output_presence:
+        pattern: |
+          def test_template_has_{output}_output(self, load_template):
+              template = load_template("{product}")
+              outputs = template.get("Outputs", {})
+              assert "{output}" in outputs
+      
+      security_property:
+        pattern: |
+          def test_{resource}_has_{property}(self, load_template):
+              template = load_template("{product}")
+              resources = template.get("Resources", {})
+              for name, r in resources.items():
+                  if r.get("Type") == "{aws_type}":
+                      props = r.get("Properties", {})
+                      assert props.get("{property}") == {expected_value}
+      
+      capability_documentation:
+        pattern: |
+          def test_capability_documents_{feature}(self, load_capability):
+              capability = load_capability("{product}")
+              assert "{feature_keyword}" in capability.lower()
+  
+  integration_test_generation:
+    location: "tests/integration/test_{product}.py"
+    
+    test_categories:
+      resource_exists:
+        pattern: |
+          def test_{resource}_exists(self, aws_session, deploy_state):
+              {resource_id} = deploy_state.get("{product}", {}).get("outputs", {}).get("{output}")
+              if not {resource_id}:
+                  pytest.skip("{output} not found in deploy state")
+              
+              client = aws_session.client("{service}")
+              response = client.describe_{resources}({Id}={resource_id})
+              assert len(response["{resources}"]) == 1
+      
+      resource_property:
+        pattern: |
+          def test_{resource}_has_{property}(self, aws_session, deploy_state):
+              # Verify deployed resource has expected property
+              ...
+      
+      connectivity:
+        pattern: |
+          def test_{product}_connectivity(self, aws_session, deploy_state):
+              # Verify product can connect to dependencies
+              ...
+
+  quality:
+    rules:
+      - One test class per product
+      - Descriptive test names
+      - Skip tests gracefully when prerequisites missing
+      - Test both positive and negative cases for security
+      - Use fixtures for common setup
+    
+    coverage:
+      - All new resources have existence tests
+      - All security properties have verification tests
+      - All outputs have presence tests
+      - CAPABILITY.md has documentation tests
+
+  commit:
+    action: git_commit
+    message: "test: add tests for {feature}"
+    scope: test_files_only
+
+outputs:
+  - unit_tests: list of unit test files
+  - integration_tests: list of integration test files
+  - commit_sha: git commit hash
+
+transitions:
+  - to: pr-reviewer
+    when: tests_complete
+    pass: branch_name, all_commits

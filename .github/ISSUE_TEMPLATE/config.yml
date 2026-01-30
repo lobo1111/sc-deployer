@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Business Requirement Discussion
+    url: https://github.com/your-org/your-repo/discussions
+    about: For initial discussion of business requirements before creating work orders

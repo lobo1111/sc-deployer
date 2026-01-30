@@ -1,0 +1,89 @@
+name: Product Feature
+description: Add a new capability to a product
+title: "[FEATURE] "
+labels: ["feature", "product"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        ## New Product Feature
+        This template is for adding new capabilities to existing products.
+
+  - type: dropdown
+    id: product
+    attributes:
+      label: Product
+      description: Which product does this feature affect?
+      options:
+        - networking
+        - database
+        - api
+        - new product (specify below)
+    validations:
+      required: true
+
+  - type: input
+    id: new-product-name
+    attributes:
+      label: New Product Name
+      description: If this is a new product, specify the name
+      placeholder: e.g., cache, queue, monitoring
+
+  - type: textarea
+    id: business-context
+    attributes:
+      label: Business Context
+      description: Why is this feature needed? What business problem does it solve?
+      placeholder: |
+        - Who needs this?
+        - What problem does it solve?
+        - What value does it provide?
+    validations:
+      required: true
+
+  - type: textarea
+    id: functional-requirements
+    attributes:
+      label: Functional Requirements
+      description: What should this feature do from a user perspective?
+      placeholder: |
+        - Users should be able to...
+        - The system should...
+        - When X happens, Y should...
+    validations:
+      required: true
+
+  - type: textarea
+    id: technical-considerations
+    attributes:
+      label: Technical Considerations
+      description: Any technical requirements or constraints?
+      placeholder: |
+        - Must integrate with...
+        - Performance requirement...
+        - Security consideration...
+
+  - type: textarea
+    id: acceptance-criteria
+    attributes:
+      label: Acceptance Criteria
+      description: How do we know this feature is complete?
+      placeholder: |
+        - [ ] Criteria 1
+        - [ ] Criteria 2
+        - [ ] CAPABILITY.md updated
+        - [ ] Tests added
+    validations:
+      required: true
+
+  - type: dropdown
+    id: priority
+    attributes:
+      label: Priority
+      options:
+        - Low
+        - Medium
+        - High
+        - Critical
+    validations:
+      required: true

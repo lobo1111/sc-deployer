@@ -1,0 +1,136 @@
+# PR Reviewer Skill
+# Reviews PRs before human review
+
+name: pr-reviewer
+description: |
+  Reviews pull requests for quality, security, and completeness.
+  Performs automated review first, then presents summary to human
+  for final approval.
+
+trigger:
+  type: event
+  source: github
+  event: pull_request.opened
+  # Also triggered by: routed from test-writer
+
+context:
+  required:
+    - pull_request
+    - diff  # All changes in PR
+    - ci_status  # GitHub Actions results
+  optional:
+    - work_orders  # Related issues
+    - previous_reviews  # If re-review
+
+behavior:
+  automated_review:
+    1_template_review:
+      checks:
+        - cfn_lint_passed
+        - yaml_syntax_valid
+        - no_hardcoded_secrets
+        - encryption_enabled_for_data_stores
+        - security_groups_minimal
+        - iam_least_privilege
+        - all_resources_tagged
+        - outputs_documented
+      
+      severity:
+        blocker:
+          - cfn_lint_errors
+          - hardcoded_secrets
+          - public_access_without_justification
+        warning:
+          - missing_descriptions
+          - overly_permissive_iam
+        info:
+          - style_suggestions
+    
+    2_config_review:
+      checks:
+        - dependencies_valid
+        - parameter_mappings_complete
+        - outputs_match_template
+    
+    3_capability_review:
+      checks:
+        - all_outputs_documented
+        - all_dependencies_documented
+        - business_context_present
+        - functional_capabilities_updated
+        - constraints_documented
+    
+    4_test_review:
+      checks:
+        - unit_tests_present
+        - integration_tests_present
+        - tests_cover_new_resources
+        - tests_cover_security_properties
+    
+    5_ci_review:
+      checks:
+        - all_checks_passed
+        - unit_tests_passed
+        - lint_passed
+
+  decision:
+    approve:
+      when:
+        - no_blockers
+        - ci_passed
+        - tests_adequate
+    
+    request_changes:
+      when:
+        - blockers_found
+        - ci_failed
+        - security_issues
+
+  presentation:
+    format: |
+      **PR #{number}: {title}**
+      
+      **Agent Review:** {status_emoji} {status}
+      
+      **Changes:**
+      {file_summary}
+      
+      **Checks:**
+      {checks_with_status}
+      
+      **Summary:**
+      {change_description}
+      
+      {if_issues}
+      **Issues Found:**
+      {issues_list}
+      {end_if}
+      
+      Please review and {approve_or_request_changes} to proceed.
+
+  human_interaction:
+    wait_for: human_decision
+    
+    on_approval:
+      actions:
+        - merge_to_target_branch
+        - trigger_deployment
+    
+    on_request_changes:
+      actions:
+        - add_review_comments
+        - notify_for_fixes
+        - return_to_implementer
+
+outputs:
+  - review_result: approved | changes_requested
+  - issues_found: list of issues
+  - human_decision: approved | rejected
+
+transitions:
+  - to: deployer
+    when: human_approves_and_merged
+    pass: target_branch, merged_commit
+  - to: implementer
+    when: changes_requested
+    pass: review_comments

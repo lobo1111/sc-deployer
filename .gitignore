@@ -1,6 +1,6 @@
 # State files (may contain sensitive info)
-deployer/.deploy-state.json
-deployer/.bootstrap-state.json
+.deploy-state.json
+.bootstrap-state.json
 
 # Python
 __pycache__/
@@ -9,6 +9,13 @@ __pycache__/
 .venv/
 venv/
 .env
+
+# Testing
+.pytest_cache/
+pytest-results.xml
+htmlcov/
+.coverage
+*.cover
 
 # IDE
 .idea/

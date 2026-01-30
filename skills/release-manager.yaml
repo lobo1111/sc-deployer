@@ -1,0 +1,134 @@
+# Release Manager Skill
+# Manages production releases
+
+name: release-manager
+description: |
+  Coordinates production releases. Presents release summary and
+  test results to human, waits for explicit approval before
+  deploying to production.
+
+trigger:
+  type: routed
+  from: deployer
+  condition: stage_successful_and_prod_pending
+  # Also triggered by: human asking about production release
+
+context:
+  required:
+    - stage_deployment_state
+    - integration_test_results
+    - changes_since_last_prod_release
+  optional:
+    - previous_releases
+    - known_issues
+
+behavior:
+  release_preparation:
+    1_gather_info:
+      collect:
+        - deployed_to_stage: products and versions
+        - test_results: integration test outcomes
+        - changes: commits since last prod release
+        - affected_products: which products changed
+    
+    2_generate_release_notes:
+      format: |
+        ## Release {version}
+        
+        ### Changes
+        {change_list}
+        
+        ### Products
+        {product_versions}
+        
+        ### Test Results
+        {test_summary}
+    
+    3_risk_assessment:
+      evaluate:
+        - breaking_changes
+        - new_dependencies
+        - infrastructure_changes
+        - security_changes
+      
+      risk_levels:
+        low: routine updates, no breaking changes
+        medium: new features, possible user impact
+        high: infrastructure changes, breaking changes
+
+  presentation:
+    format: |
+      **Ready for Production Deployment**
+      
+      **Release:** {version}
+      **Risk Level:** {risk_level}
+      
+      **Stage Deployment:** ✅ Successful
+      **Integration Tests:** {test_status} ({passed}/{total} passed)
+      
+      **Changes Included:**
+      {change_summary}
+      
+      **Products to Deploy:**
+      {product_list_with_versions}
+      
+      {if_warnings}
+      **Warnings:**
+      {warnings}
+      {end_if}
+      
+      Approve deployment to PRODUCTION?
+
+  human_interaction:
+    wait_for: explicit_approval
+    
+    accepted_responses:
+      - "approved"
+      - "deploy"
+      - "release"
+      - "go"
+      - "yes"
+    
+    rejection_responses:
+      - "no"
+      - "stop"
+      - "hold"
+      - "wait"
+    
+    on_approval:
+      actions:
+        - trigger_prod_deployment
+        - create_release_tag
+        - notify_stakeholders
+    
+    on_rejection:
+      actions:
+        - record_rejection_reason
+        - hold_release
+        - notify_team
+
+  post_release:
+    on_success:
+      - create_github_release
+      - update_release_notes
+      - notify_success
+      - close_related_issues
+    
+    on_failure:
+      - capture_error
+      - notify_failure
+      - suggest_rollback
+      - keep_issues_open
+
+outputs:
+  - release_approved: boolean
+  - release_version: semantic version
+  - deployment_status: success | failed
+  - release_notes: markdown document
+
+transitions:
+  - to: deployer
+    when: human_approves
+    pass: environment=prod, version
+  - to: guide
+    when: release_rejected_or_complete
