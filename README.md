@@ -39,7 +39,36 @@ sc-deployer/
 
 ## Setup
 
+**Quick start (recommended):**
+
+```powershell
+# Windows PowerShell
+.\cli.ps1
+```
+
 ```bash
+# Linux/macOS
+./cli.sh
+```
+
+The wrapper scripts automatically:
+- Check Python 3.10+ is installed
+- Create virtual environment (optional)
+- Install dependencies
+- Launch interactive menu
+
+**Manual setup:**
+
+```bash
+# Create virtual environment
+python -m venv .venv
+
+# Activate (Windows)
+.\.venv\Scripts\Activate.ps1
+
+# Activate (Linux/macOS)
+source .venv/bin/activate
+
 # Install dependencies
 pip install -r requirements.txt
 ```
