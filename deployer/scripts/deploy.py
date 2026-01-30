@@ -24,6 +24,8 @@ import yaml
 
 from config import (
     get_project_root,
+    get_repo_root,
+    get_products_root,
     load_catalog_config,
     get_environment_config,
 )
@@ -204,7 +206,7 @@ def get_changed_products(ctx: DeployContext) -> set:
             continue
 
         # Git diff since last publish
-        product_path = get_project_root() / config["path"]
+        product_path = get_products_root() / config["path"]
         try:
             result = subprocess.run(
                 ["git", "diff", "--name-only", last_commit, "HEAD", "--", str(product_path)],
@@ -331,7 +333,7 @@ def publish_product(ctx: DeployContext, product_name: str) -> str:
     sc = session.client("servicecatalog")
 
     # Upload template to S3
-    template_path = get_project_root() / config["path"] / "template.yaml"
+    template_path = get_products_root() / config["path"] / "template.yaml"
     s3_key = f"{product_name}/{version}/template.yaml"
 
     with open(template_path, "rb") as f:
@@ -384,7 +386,7 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
         raise ValueError(f"Product '{product_name}' has not been published yet")
 
     stack_name = f"{ctx.environment}-{product_name}"
-    template_path = get_project_root() / config["path"] / "template.yaml"
+    template_path = get_products_root() / config["path"] / "template.yaml"
 
     # Resolve parameters from dependencies
     parameters = resolve_parameters(ctx, product_name)

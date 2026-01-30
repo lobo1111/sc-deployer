@@ -8,14 +8,25 @@ from pathlib import Path
 import yaml
 
 
-def get_project_root() -> Path:
-    """Get project root directory (deployer folder)."""
+def get_deployer_root() -> Path:
+    """Get deployer directory (configs, scripts)."""
     return Path(__file__).parent.parent
 
 
 def get_repo_root() -> Path:
     """Get repository root directory."""
     return Path(__file__).parent.parent.parent
+
+
+def get_products_root() -> Path:
+    """Get products directory (in repo root)."""
+    return get_repo_root() / "products"
+
+
+# Alias for backward compatibility
+def get_project_root() -> Path:
+    """Alias for get_deployer_root."""
+    return get_deployer_root()
 
 
 def load_profiles(profiles_file: str = "profiles.yaml") -> dict:

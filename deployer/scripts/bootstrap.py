@@ -19,6 +19,7 @@ import yaml
 
 from config import (
     get_project_root,
+    get_products_root,
     load_bootstrap_config,
     load_catalog_config,
     get_environment_config,
@@ -273,7 +274,7 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
     """Create Service Catalog product definitions from catalog.yaml."""
     catalog = load_catalog_config()
     products_config = catalog.get("products", {})
-    project_root = get_project_root()
+    products_root = get_products_root()
 
     if not products_config:
         print("\n[Products] No products in catalog.yaml")
@@ -308,7 +309,7 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict) -> dict:
             print(f"  Exists: {name} ({product_id})")
         else:
             # Load product.yaml for description
-            product_yaml = project_root / config["path"] / "product.yaml"
+            product_yaml = products_root / config["path"] / "product.yaml"
             description = f"Service Catalog product: {name}"
             if product_yaml.exists():
                 with open(product_yaml) as f:

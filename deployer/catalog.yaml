@@ -7,7 +7,7 @@ settings:
 
 products:
   networking:
-    path: products/networking
+    path: networking
     portfolio: infrastructure
     dependencies: []
     outputs:
@@ -17,7 +17,7 @@ products:
       - SecurityGroupId
 
   database:
-    path: products/database
+    path: database
     portfolio: data-services
     dependencies:
       - networking
@@ -31,7 +31,7 @@ products:
       - DatabaseSecretArn
 
   api:
-    path: products/api
+    path: api
     portfolio: application-services
     ecr_repository: api-service
     dependencies:

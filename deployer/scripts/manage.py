@@ -26,7 +26,7 @@ import questionary
 import yaml
 from questionary import Style
 
-from config import get_project_root, load_bootstrap_config, load_catalog_config
+from config import get_project_root, get_products_root, load_bootstrap_config, load_catalog_config
 
 
 # ============== STYLING ==============
@@ -964,7 +964,7 @@ def interactive_add_product():
     ).ask()
     
     # Create directory and files
-    products_dir = get_project_root() / "products" / name
+    products_dir = get_products_root() / name
     products_dir.mkdir(parents=True, exist_ok=True)
     
     # product.yaml
@@ -1046,7 +1046,7 @@ Outputs:
     print(f"   • products/{name}/template.yaml")
     print(f"   • catalog.yaml updated")
     print(f"\nNext steps:")
-    print(f"   1. Edit deployer/products/{name}/template.yaml")
+    print(f"   1. Edit products/{name}/template.yaml")
     print(f"   2. python deployer/scripts/deploy.py publish -e dev -p {name}")
     
     print_command_hint(f"manage.py products add {name}")
