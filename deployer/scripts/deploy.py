@@ -11,6 +11,7 @@ Usage:
 """
 
 import argparse
+import hashlib
 import json
 import subprocess
 import sys
@@ -78,8 +79,24 @@ def generate_version(catalog: dict) -> str:
     return datetime.now(timezone.utc).strftime(fmt)
 
 
+def is_git_repo() -> bool:
+    """Check if current directory is a git repository."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--git-dir"],
+            capture_output=True,
+            text=True,
+            cwd=get_repo_root(),
+        )
+        return result.returncode == 0
+    except Exception:
+        return False
+
+
 def get_current_commit() -> str:
     """Get current git commit hash."""
+    if not is_git_repo():
+        return ""
     try:
         result = subprocess.run(
             ["git", "rev-parse", "HEAD"],
@@ -87,13 +104,43 @@ def get_current_commit() -> str:
             text=True,
             cwd=get_repo_root(),
         )
-        return result.stdout.strip()
+        if result.returncode == 0:
+            return result.stdout.strip()
+        return ""
     except Exception:
-        return "unknown"
+        return ""
+
+
+def compute_product_hash(product_path: Path) -> str:
+    """Compute a hash of all files in the product directory."""
+    if not product_path.exists():
+        return ""
+    
+    hasher = hashlib.sha256()
+    
+    # Get all files sorted for consistent ordering
+    files = sorted(product_path.rglob("*"))
+    
+    for file_path in files:
+        if file_path.is_file():
+            # Include relative path in hash for structure changes
+            rel_path = file_path.relative_to(product_path)
+            hasher.update(str(rel_path).encode())
+            
+            # Include file content
+            try:
+                with open(file_path, "rb") as f:
+                    hasher.update(f.read())
+            except Exception:
+                pass
+    
+    return hasher.hexdigest()[:16]  # Short hash for readability
 
 
 def has_uncommitted_changes() -> bool:
     """Check if there are uncommitted changes in git."""
+    if not is_git_repo():
+        return False
     try:
         result = subprocess.run(
             ["git", "status", "--porcelain"],
@@ -251,29 +298,41 @@ def get_changed_products(ctx: DeployContext) -> set:
     """Detect products with code changes since last publish."""
     changed = set()
     env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    use_git = is_git_repo()
 
     for name, config in ctx.catalog["products"].items():
         product_state = env_state.get(name, {})
-        last_commit = product_state.get("published_commit", "")
-
-        # Never published = changed
-        if not last_commit:
-            changed.add(name)
-            continue
-
-        # Git diff since last publish
         product_path = get_products_root() / config["path"]
-        try:
-            result = subprocess.run(
-                ["git", "diff", "--name-only", last_commit, "HEAD", "--", str(product_path)],
-                capture_output=True,
-                text=True,
-                cwd=get_project_root(),
-            )
-            if result.stdout.strip():
+        
+        if use_git:
+            # Git-based change detection
+            last_commit = product_state.get("published_commit", "")
+            
+            # Never published = changed
+            if not last_commit:
                 changed.add(name)
-        except Exception:
-            changed.add(name)  # Assume changed if can't determine
+                continue
+
+            # Git diff since last publish
+            try:
+                result = subprocess.run(
+                    ["git", "diff", "--name-only", last_commit, "HEAD", "--", str(product_path)],
+                    capture_output=True,
+                    text=True,
+                    cwd=get_repo_root(),
+                )
+                if result.stdout.strip():
+                    changed.add(name)
+            except Exception:
+                changed.add(name)  # Assume changed if can't determine
+        else:
+            # Hash-based change detection (fallback when git unavailable)
+            last_hash = product_state.get("published_hash", "")
+            current_hash = compute_product_hash(product_path)
+            
+            # Never published or hash changed
+            if not last_hash or last_hash != current_hash:
+                changed.add(name)
 
     return changed
 
@@ -363,10 +422,15 @@ def publish_product(ctx: DeployContext, product_name: str) -> str:
     config = ctx.catalog["products"][product_name]
     version = generate_version(ctx.catalog)
     current_commit = get_current_commit()
+    product_path = get_products_root() / config["path"]
+    current_hash = compute_product_hash(product_path)
 
     print(f"\n  Publishing: {product_name}")
     print(f"    Version: {version}")
-    print(f"    Commit:  {current_commit[:8]}")
+    if current_commit:
+        print(f"    Commit:  {current_commit[:8]}")
+    else:
+        print(f"    Hash:    {current_hash}")
 
     if ctx.dry_run:
         print("    [DRY RUN] Skipping")
@@ -399,11 +463,17 @@ def publish_product(ctx: DeployContext, product_name: str) -> str:
     # Create provisioning artifact (version) in Service Catalog
     template_url = f"https://{bucket_name}.s3.{ctx.aws_region}.amazonaws.com/{s3_key}"
 
+    # Build description based on available tracking info
+    if current_commit:
+        description = f"Version {version} (commit: {current_commit[:8]})"
+    else:
+        description = f"Version {version} (hash: {current_hash})"
+
     sc.create_provisioning_artifact(
         ProductId=product_id,
         Parameters={
             "Name": version,
-            "Description": f"Version {version} (commit: {current_commit[:8]})",
+            "Description": description,
             "Type": "CLOUD_FORMATION_TEMPLATE",
             "Info": {"LoadTemplateFromURL": template_url},
         },
@@ -419,6 +489,7 @@ def publish_product(ctx: DeployContext, product_name: str) -> str:
         {
             "version": version,
             "published_commit": current_commit,
+            "published_hash": current_hash,
             "published_at": datetime.now(timezone.utc)
             .isoformat()
             .replace("+00:00", "Z"),
@@ -596,15 +667,15 @@ def cmd_plan(ctx: DeployContext):
         print("\nNothing to deploy.")
 
 
-def cmd_publish(ctx: DeployContext, products: list[str] | None = None, auto_commit: bool = True):
+def cmd_publish(ctx: DeployContext, products: list[str] | None = None, auto_commit: bool = True, force: bool = False):
     """Publish changed products."""
     if not cmd_validate(ctx):
         return
 
-    # Check for uncommitted changes
+    # Check for uncommitted changes (only if git repo exists)
     if has_uncommitted_changes():
         uncommitted = get_uncommitted_files()
-        print(f"\n⚠️  Uncommitted changes detected ({len(uncommitted)} files):")
+        print(f"\n[!] Uncommitted changes detected ({len(uncommitted)} files):")
         for f in uncommitted[:10]:
             print(f"   • {f}")
         if len(uncommitted) > 10:
@@ -621,26 +692,37 @@ def cmd_publish(ctx: DeployContext, products: list[str] | None = None, auto_comm
                 commit_msg = "Publish: auto-commit before publish"
             
             if commit_all_changes(commit_msg):
-                print(f"✅ Committed: {commit_msg}")
+                print(f"[OK] Committed: {commit_msg}")
             else:
-                print("❌ Failed to commit changes")
+                print("[ERROR] Failed to commit changes")
                 print("   Please commit manually and try again.")
                 return
         else:
-            print("\n❌ Please commit changes before publishing.")
+            print("\n[ERROR] Please commit changes before publishing.")
             return
 
+    # Get products that actually have code changes
+    changed_products = get_changed_products(ctx)
+    
     if products:
-        to_publish = set(products)
+        # Filter specified products to only those with changes (unless forced)
+        if force:
+            to_publish = set(products)
+        else:
+            to_publish = set(products) & changed_products
+            skipped = set(products) - changed_products
+            if skipped:
+                print(f"\nSkipping unchanged products: {', '.join(sorted(skipped))}")
+                print("  (Use --force to publish anyway)")
     else:
-        to_publish = get_changed_products(ctx)
+        to_publish = changed_products
 
     if not to_publish:
         print("\nNo changes detected. Nothing to publish.")
         return
 
-    affected = get_affected_products(ctx, to_publish)
-    order = topological_sort(ctx, affected)
+    # Sort by dependency order (dependencies first), but only publish products with actual changes
+    order = topological_sort(ctx, to_publish)
 
     print(f"\nPublishing {len(order)} product(s): {' -> '.join(order)}")
 
@@ -692,23 +774,35 @@ def cmd_deploy(ctx: DeployContext, products: list[str] | None = None):
 def cmd_status(ctx: DeployContext):
     """Show publish/deploy status."""
     env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    use_git = is_git_repo()
 
     print(f"\nStatus: {ctx.environment}")
+    if not use_git:
+        print("(No git repo - using file hash for change detection)")
     print("=" * 85)
+    
+    # Column header depends on tracking method
+    track_col = "Commit" if use_git else "Hash"
     print(
-        f"{'Product':<15} {'Version':<20} {'Published':<10} {'Deployed':<10} {'Status'}"
+        f"{'Product':<15} {'Version':<20} {track_col:<12} {'Deployed':<10} {'Status'}"
     )
     print("-" * 85)
 
     for name in ctx.catalog["products"]:
         product_state = env_state.get(name, {})
         version = product_state.get("version", "-")
-        pub_commit = (product_state.get("published_commit") or "")[:8] or "-"
-        dep_commit = (product_state.get("deployed_commit") or "")[:8] or "-"
+        
+        # Show commit or hash depending on what's available
+        if use_git:
+            pub_track = (product_state.get("published_commit") or "")[:8] or "-"
+            dep_track = (product_state.get("deployed_commit") or "")[:8] or "-"
+        else:
+            pub_track = (product_state.get("published_hash") or "")[:8] or "-"
+            dep_track = "-"  # Hash tracking only applies to publish
 
         if not product_state.get("version"):
             status = "NOT PUBLISHED"
-        elif product_state.get("published_commit") != product_state.get(
+        elif use_git and product_state.get("published_commit") != product_state.get(
             "deployed_commit"
         ):
             status = "PENDING DEPLOY"
@@ -720,7 +814,7 @@ def cmd_status(ctx: DeployContext):
             else:
                 status = "OK"
 
-        print(f"{name:<15} {version:<20} {pub_commit:<10} {dep_commit:<10} {status}")
+        print(f"{name:<15} {version:<20} {pub_track:<12} {dep_track:<10} {status}")
 
 
 def main():
@@ -760,6 +854,10 @@ Examples:
         "-p", "--product", action="append", help="Specific product(s)"
     )
     publish_parser.add_argument("--dry-run", action="store_true")
+    publish_parser.add_argument(
+        "--force", action="store_true",
+        help="Publish even if no changes detected"
+    )
 
     # deploy
     deploy_parser = subparsers.add_parser("deploy", help="Deploy products")
@@ -806,7 +904,7 @@ Examples:
     elif args.command == "plan":
         cmd_plan(ctx)
     elif args.command == "publish":
-        cmd_publish(ctx, getattr(args, "product", None))
+        cmd_publish(ctx, getattr(args, "product", None), force=getattr(args, "force", False))
     elif args.command == "deploy":
         cmd_deploy(ctx, getattr(args, "product", None))
     elif args.command == "status":

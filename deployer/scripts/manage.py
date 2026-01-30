@@ -414,11 +414,78 @@ ecr_repositories: []
 portfolios: {}
 """)
     
-    print(f"\n✅ Project initialized!\n")
+    # Initialize git repository
+    git_path = target_path / ".git"
+    git_initialized = git_path.exists()
+    
+    if not git_initialized:
+        print(f"\n  Initializing git repository...")
+        result = subprocess.run(
+            ["git", "init"],
+            capture_output=True,
+            text=True,
+            cwd=target_path,
+        )
+        if result.returncode == 0:
+            print(f"  [OK] Initialized git repository")
+            git_initialized = True
+        else:
+            print(f"  [!] Failed to init git: {result.stderr.strip()}")
+    
+    # Create .gitignore
+    gitignore_path = target_path / ".gitignore"
+    if not gitignore_path.exists():
+        with open(gitignore_path, "w") as f:
+            f.write("""# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+.env
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# State files (contain sensitive info like account IDs)
+deployer/.deploy-state.json
+deployer/.bootstrap-state.json
+
+# Local overrides
+*.local.yaml
+""")
+        print(f"  [OK] Created: .gitignore")
+    
+    # Create initial commit
+    if git_initialized:
+        # Stage all files
+        subprocess.run(
+            ["git", "add", "-A"],
+            capture_output=True,
+            cwd=target_path,
+        )
+        # Create initial commit
+        commit_result = subprocess.run(
+            ["git", "commit", "-m", "Initial project setup with SC Deployer"],
+            capture_output=True,
+            text=True,
+            cwd=target_path,
+        )
+        if commit_result.returncode == 0:
+            print(f"  [OK] Created initial commit")
+    
+    print(f"\n[OK] Project initialized!\n")
     print("Next steps:")
     print(f"  1. cd {target_path}")
     print(f"  2. .\\cli.ps1  (or ./cli.sh on Linux/macOS)")
-    print(f"  3. Select 'Quick Start' → 'Add/configure AWS profile'")
+    print(f"  3. Select 'Quick Start' -> 'Add/configure AWS profile'")
     
     print_command_hint("manage.py status")
     confirm_continue()
