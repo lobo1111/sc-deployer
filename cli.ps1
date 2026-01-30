@@ -221,10 +221,18 @@ function Main {
         exit 1
     }
     
-    if ($Arguments -and $Arguments.Count -gt 0) {
-        & $pythonCmd $managePath @Arguments
-    } else {
-        & $pythonCmd $managePath
+    try {
+        if ($Arguments -and $Arguments.Count -gt 0) {
+            & $pythonCmd $managePath @Arguments
+        } else {
+            & $pythonCmd $managePath
+        }
+    }
+    finally {
+        # Deactivate venv on exit
+        if ($venvPath -and (Get-Command "deactivate" -ErrorAction SilentlyContinue)) {
+            deactivate
+        }
     }
     
     exit $LASTEXITCODE

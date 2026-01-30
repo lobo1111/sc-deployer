@@ -190,8 +190,15 @@ main() {
         exit 1
     fi
     
-    "$python_cmd" "$manage_path" "$@"
-    exit $?
+    local exit_code=0
+    "$python_cmd" "$manage_path" "$@" || exit_code=$?
+    
+    # Deactivate venv on exit
+    if [[ -n "$venv_path" ]] && command -v deactivate &> /dev/null; then
+        deactivate 2>/dev/null || true
+    fi
+    
+    exit $exit_code
 }
 
 show_header
