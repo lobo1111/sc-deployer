@@ -3,6 +3,7 @@
 Management CLI for SC Deployer.
 
 Usage:
+    python manage.py                    # Interactive menu
     python manage.py profiles list
     python manage.py profiles scan
     python manage.py profiles add <name>
@@ -19,11 +20,320 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable
 
 import boto3
 import yaml
 
 from config import get_project_root, load_bootstrap_config, load_catalog_config
+
+
+# ============== INTERACTIVE MENU ==============
+
+
+def clear_screen():
+    """Clear terminal screen."""
+    print("\033[H\033[J", end="")
+
+
+def print_header(title: str):
+    """Print a styled header."""
+    print()
+    print("=" * 50)
+    print(f"  {title}")
+    print("=" * 50)
+    print()
+
+
+def print_menu(title: str, options: list[tuple[str, str]], back: bool = True) -> str:
+    """
+    Display a menu and get user selection.
+    
+    Args:
+        title: Menu title
+        options: List of (key, description) tuples
+        back: Whether to show back/quit option
+    
+    Returns:
+        Selected key or 'back'/'quit'
+    """
+    print_header(title)
+    
+    for key, desc in options:
+        print(f"  [{key}] {desc}")
+    
+    if back:
+        print()
+        print("  [b] Back")
+        print("  [q] Quit")
+    
+    print()
+    choice = input("Select option: ").strip().lower()
+    
+    if choice == "q":
+        print("\nGoodbye!")
+        sys.exit(0)
+    
+    if choice == "b" and back:
+        return "back"
+    
+    return choice
+
+
+def interactive_menu():
+    """Main interactive menu loop."""
+    while True:
+        clear_screen()
+        choice = print_menu("SC Deployer - Management CLI", [
+            ("1", "Profiles - Manage AWS profiles"),
+            ("2", "Portfolios - Manage Service Catalog portfolios"),
+            ("3", "Products - Manage products"),
+            ("4", "Status - Show overall status"),
+        ], back=False)
+        
+        if choice == "1":
+            profiles_menu()
+        elif choice == "2":
+            portfolios_menu()
+        elif choice == "3":
+            products_menu()
+        elif choice == "4":
+            status_overview()
+        elif choice == "q":
+            print("\nGoodbye!")
+            break
+        else:
+            input("Invalid option. Press Enter to continue...")
+
+
+def profiles_menu():
+    """Profiles submenu."""
+    while True:
+        clear_screen()
+        choice = print_menu("Profiles", [
+            ("1", "List configured profiles"),
+            ("2", "Scan available AWS profiles"),
+            ("3", "Add new profile"),
+            ("4", "Login (SSO)"),
+            ("5", "Who am I? (check identity)"),
+        ])
+        
+        if choice == "back":
+            return
+        elif choice == "1":
+            clear_screen()
+            cmd_profiles_list()
+            input("\nPress Enter to continue...")
+        elif choice == "2":
+            clear_screen()
+            cmd_profiles_scan()
+            input("\nPress Enter to continue...")
+        elif choice == "3":
+            clear_screen()
+            print_header("Add Profile")
+            name = input("Environment name (e.g., dev, prod): ").strip()
+            if name:
+                cmd_profiles_add(name)
+            input("\nPress Enter to continue...")
+        elif choice == "4":
+            clear_screen()
+            print_header("SSO Login")
+            cmd_profiles_list()
+            print()
+            name = input("Environment name to login: ").strip()
+            if name:
+                cmd_profiles_login(name)
+            input("\nPress Enter to continue...")
+        elif choice == "5":
+            clear_screen()
+            print_header("Who Am I?")
+            cmd_profiles_list()
+            print()
+            name = input("Environment name (or Enter for default): ").strip()
+            cmd_profiles_whoami(name if name else None)
+            input("\nPress Enter to continue...")
+
+
+def portfolios_menu():
+    """Portfolios submenu."""
+    while True:
+        clear_screen()
+        choice = print_menu("Portfolios", [
+            ("1", "List portfolios"),
+            ("2", "Add new portfolio"),
+        ])
+        
+        if choice == "back":
+            return
+        elif choice == "1":
+            clear_screen()
+            cmd_portfolios_list()
+            input("\nPress Enter to continue...")
+        elif choice == "2":
+            clear_screen()
+            print_header("Add Portfolio")
+            name = input("Portfolio name (e.g., security, monitoring): ").strip()
+            if name:
+                # Ask for environment
+                cmd_profiles_list()
+                print()
+                env = input("Environment for principal lookup (or Enter to skip): ").strip()
+                cmd_portfolios_add(name, env if env else None)
+            input("\nPress Enter to continue...")
+
+
+def products_menu():
+    """Products submenu."""
+    while True:
+        clear_screen()
+        choice = print_menu("Products", [
+            ("1", "List products"),
+            ("2", "Add new product"),
+            ("3", "Show dependency graph"),
+        ])
+        
+        if choice == "back":
+            return
+        elif choice == "1":
+            clear_screen()
+            cmd_products_list()
+            input("\nPress Enter to continue...")
+        elif choice == "2":
+            clear_screen()
+            print_header("Add Product")
+            name = input("Product name (e.g., monitoring, cache): ").strip()
+            if name:
+                cmd_products_add(name)
+            input("\nPress Enter to continue...")
+        elif choice == "3":
+            clear_screen()
+            show_dependency_graph()
+            input("\nPress Enter to continue...")
+
+
+def status_overview():
+    """Show overall status."""
+    clear_screen()
+    print_header("Status Overview")
+    
+    # Profiles
+    print("PROFILES:")
+    profiles_path = get_project_root() / "profiles.yaml"
+    if profiles_path.exists():
+        with open(profiles_path) as f:
+            data = yaml.safe_load(f)
+        profiles = data.get("profiles", {})
+        for name, cfg in profiles.items():
+            print(f"  {name}: {cfg.get('aws_profile')} ({cfg.get('aws_region')})")
+    else:
+        print("  No profiles configured")
+    
+    # Portfolios
+    print("\nPORTFOLIOS:")
+    config = load_bootstrap_config()
+    portfolios = config.get("portfolios", {})
+    for name in portfolios:
+        print(f"  {name}")
+    if not portfolios:
+        print("  No portfolios configured")
+    
+    # Products
+    print("\nPRODUCTS:")
+    catalog = load_catalog_config()
+    products = catalog.get("products", {})
+    for name, cfg in products.items():
+        deps = cfg.get("dependencies", [])
+        dep_str = f" -> depends on: {', '.join(deps)}" if deps else ""
+        print(f"  {name}{dep_str}")
+    if not products:
+        print("  No products configured")
+    
+    # Bootstrap state
+    print("\nBOOTSTRAP STATE:")
+    bootstrap_state_path = get_project_root() / ".bootstrap-state.json"
+    if bootstrap_state_path.exists():
+        with open(bootstrap_state_path) as f:
+            state = json.load(f)
+        for env in state.get("environments", {}):
+            bootstrapped = state["environments"][env].get("bootstrapped_at", "unknown")
+            print(f"  {env}: bootstrapped at {bootstrapped}")
+    else:
+        print("  Not bootstrapped yet")
+    
+    # Deploy state
+    print("\nDEPLOY STATE:")
+    deploy_state_path = get_project_root() / ".deploy-state.json"
+    if deploy_state_path.exists():
+        with open(deploy_state_path) as f:
+            state = json.load(f)
+        for env, env_state in state.get("environments", {}).items():
+            print(f"  {env}:")
+            for product, pstate in env_state.items():
+                version = pstate.get("version", "-")
+                deployed = "deployed" if pstate.get("deployed_commit") else "not deployed"
+                print(f"    {product}: v{version} ({deployed})")
+    else:
+        print("  No deployments yet")
+    
+    input("\nPress Enter to continue...")
+
+
+def show_dependency_graph():
+    """Show ASCII dependency graph."""
+    print_header("Dependency Graph")
+    
+    catalog = load_catalog_config()
+    products = catalog.get("products", {})
+    
+    if not products:
+        print("No products configured")
+        return
+    
+    # Find root products (no dependencies)
+    roots = [name for name, cfg in products.items() if not cfg.get("dependencies")]
+    
+    # Build reverse dependency map
+    dependents = {name: [] for name in products}
+    for name, cfg in products.items():
+        for dep in cfg.get("dependencies", []):
+            if dep in dependents:
+                dependents[dep].append(name)
+    
+    # Print tree
+    printed = set()
+    
+    def print_tree(name: str, prefix: str = "", is_last: bool = True):
+        if name in printed:
+            connector = "└── " if is_last else "├── "
+            print(f"{prefix}{connector}{name} (circular ref)")
+            return
+        
+        printed.add(name)
+        connector = "└── " if is_last else "├── "
+        
+        cfg = products.get(name, {})
+        outputs = len(cfg.get("outputs", []))
+        portfolio = cfg.get("portfolio", "")
+        
+        print(f"{prefix}{connector}{name} [{portfolio}] ({outputs} outputs)")
+        
+        children = dependents.get(name, [])
+        for i, child in enumerate(children):
+            is_child_last = i == len(children) - 1
+            new_prefix = prefix + ("    " if is_last else "│   ")
+            print_tree(child, new_prefix, is_child_last)
+    
+    print("Product dependency tree:\n")
+    
+    if roots:
+        for i, root in enumerate(roots):
+            print_tree(root, "", i == len(roots) - 1)
+    else:
+        print("No root products found (possible circular dependencies)")
+        for name in products:
+            print(f"  - {name}")
+    
+    print("\nLegend: product [portfolio] (outputs count)")
 
 
 # ============== AWS PROFILE UTILITIES ==============
@@ -669,9 +979,32 @@ Outputs:
 
 
 def main():
+    # If no arguments, launch interactive menu
+    if len(sys.argv) == 1:
+        try:
+            interactive_menu()
+        except KeyboardInterrupt:
+            print("\n\nGoodbye!")
+        return
+    
     parser = argparse.ArgumentParser(
         description="SC Deployer Management CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Run without arguments for interactive menu:
+    python manage.py
+
+Or use commands directly:
+    python manage.py profiles list
+    python manage.py profiles scan
+    python manage.py profiles add dev
+    python manage.py profiles login dev
+    python manage.py profiles whoami dev
+    python manage.py portfolios list
+    python manage.py portfolios add security -e dev
+    python manage.py products list
+    python manage.py products add monitoring
+        """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
     
@@ -711,6 +1044,12 @@ def main():
     products_add = products_sub.add_parser("add", help="Add a product")
     products_add.add_argument("name", help="Product name")
     
+    # status
+    subparsers.add_parser("status", help="Show overall status")
+    
+    # graph
+    subparsers.add_parser("graph", help="Show dependency graph")
+    
     args = parser.parse_args()
     
     # Route commands
@@ -737,6 +1076,12 @@ def main():
             cmd_products_list()
         elif args.subcommand == "add":
             cmd_products_add(args.name)
+    
+    elif args.command == "status":
+        status_overview()
+    
+    elif args.command == "graph":
+        show_dependency_graph()
 
 
 if __name__ == "__main__":

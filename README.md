@@ -32,6 +32,7 @@ sc-deployer/
 │       └── template.yaml
 └── scripts/
     ├── config.py           # Shared config loader
+    ├── manage.py           # Management CLI (profiles, portfolios, products)
     ├── bootstrap.py        # Bootstrap script
     └── deploy.py           # Deploy script
 ```
