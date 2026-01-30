@@ -59,7 +59,8 @@ def print_command_hint(command: str):
     """Print hint for non-interactive usage."""
     print()
     print("-" * 60)
-    print(f"  Non-interactive: python scripts/{command}")
+    print(f"  CLI: .\\cli.ps1 {command.replace('.py ', ' ').replace('manage ', '')}")
+    print(f"  Direct: python deployer/scripts/{command}")
     print("-" * 60)
 
 
@@ -289,7 +290,7 @@ def quick_start_wizard():
         if envs:
             print("   Run bootstrap to create AWS resources:")
             for env in envs:
-                print(f"   python scripts/bootstrap.py bootstrap -e {env}")
+                print(f"   python deployer/scripts/bootstrap.py bootstrap -e {env}")
     
     print()
     
@@ -786,11 +787,11 @@ def interactive_add_portfolio():
         yaml.dump(config, f, default_flow_style=False, sort_keys=False)
     
     print(f"\n✅ Portfolio '{name}' added!")
-    print(f"\nNext: Run bootstrap to create it in AWS:")
+        print(f"\nNext: Run bootstrap to create it in AWS:")
     
     envs = get_configured_environments()
     if envs:
-        print(f"   python scripts/bootstrap.py bootstrap -e {envs[0]}")
+        print(f"   python deployer/scripts/bootstrap.py bootstrap -e {envs[0]}")
     
     print_command_hint(f"manage.py portfolios add {name}")
     confirm_continue()
@@ -1045,8 +1046,8 @@ Outputs:
     print(f"   • products/{name}/template.yaml")
     print(f"   • catalog.yaml updated")
     print(f"\nNext steps:")
-    print(f"   1. Edit products/{name}/template.yaml")
-    print(f"   2. python scripts/deploy.py publish -e dev -p {name}")
+    print(f"   1. Edit deployer/products/{name}/template.yaml")
+    print(f"   2. python deployer/scripts/deploy.py publish -e dev -p {name}")
     
     print_command_hint(f"manage.py products add {name}")
     confirm_continue()

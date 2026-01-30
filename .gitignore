@@ -1,6 +1,6 @@
 # State files (may contain sensitive info)
-.deploy-state.json
-.bootstrap-state.json
+deployer/.deploy-state.json
+deployer/.bootstrap-state.json
 
 # Python
 __pycache__/

@@ -87,7 +87,7 @@ check_requirements() {
 # Install requirements
 install_requirements() {
     local python_cmd="$1"
-    local req_file="$SCRIPT_DIR/requirements.txt"
+    local req_file="$SCRIPT_DIR/deployer/requirements.txt"
     
     info "  Installing dependencies..."
     "$python_cmd" -m pip install -q -r "$req_file"
@@ -183,10 +183,10 @@ main() {
     echo ""
     
     # Run manage.py
-    manage_path="$SCRIPT_DIR/scripts/manage.py"
+    manage_path="$SCRIPT_DIR/deployer/scripts/manage.py"
     
     if [[ ! -f "$manage_path" ]]; then
-        error "  Error: scripts/manage.py not found"
+        error "  Error: deployer/scripts/manage.py not found"
         exit 1
     fi
     

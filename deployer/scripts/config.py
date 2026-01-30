@@ -9,8 +9,13 @@ import yaml
 
 
 def get_project_root() -> Path:
-    """Get project root directory."""
+    """Get project root directory (deployer folder)."""
     return Path(__file__).parent.parent
+
+
+def get_repo_root() -> Path:
+    """Get repository root directory."""
+    return Path(__file__).parent.parent.parent
 
 
 def load_profiles(profiles_file: str = "profiles.yaml") -> dict:

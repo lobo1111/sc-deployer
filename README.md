@@ -15,26 +15,31 @@ AWS Service Catalog deployment orchestrator with dependency management.
 
 ```
 sc-deployer/
-├── profiles.yaml           # AWS profiles (shared config)
-├── bootstrap.yaml          # Bootstrap configuration (portfolios, ECR, S3)
-├── catalog.yaml            # Products and dependencies
-├── .bootstrap-state.json   # Bootstrap state (generated)
-├── .deploy-state.json      # Deploy state (generated)
-├── products/
-│   ├── networking/
-│   │   ├── product.yaml    # Product metadata
-│   │   └── template.yaml   # CloudFormation template
-│   ├── database/
-│   │   ├── product.yaml
-│   │   └── template.yaml
-│   └── api/
-│       ├── product.yaml
-│       └── template.yaml
-└── scripts/
-    ├── config.py           # Shared config loader
-    ├── manage.py           # Management CLI (profiles, portfolios, products)
-    ├── bootstrap.py        # Bootstrap script
-    └── deploy.py           # Deploy script
+├── cli.ps1                     # Windows PowerShell wrapper
+├── cli.sh                      # Linux/macOS Bash wrapper
+├── README.md
+└── deployer/
+    ├── profiles.yaml           # AWS profiles (shared config)
+    ├── bootstrap.yaml          # Bootstrap configuration (portfolios, ECR, S3)
+    ├── catalog.yaml            # Products and dependencies
+    ├── requirements.txt        # Python dependencies
+    ├── .bootstrap-state.json   # Bootstrap state (generated)
+    ├── .deploy-state.json      # Deploy state (generated)
+    ├── products/
+    │   ├── networking/
+    │   │   ├── product.yaml    # Product metadata
+    │   │   └── template.yaml   # CloudFormation template
+    │   ├── database/
+    │   │   ├── product.yaml
+    │   │   └── template.yaml
+    │   └── api/
+    │       ├── product.yaml
+    │       └── template.yaml
+    └── scripts/
+        ├── config.py           # Shared config loader
+        ├── manage.py           # Management CLI (profiles, portfolios, products)
+        ├── bootstrap.py        # Bootstrap script
+        └── deploy.py           # Deploy script
 ```
 
 ## Setup
@@ -78,21 +83,14 @@ pip install -r requirements.txt
 ### 0. Configure Profiles
 
 ```bash
-# Scan available AWS profiles from ~/.aws/config
-python scripts/manage.py profiles scan
+# Using wrapper (recommended)
+.\cli.ps1 profiles scan       # Scan available AWS profiles
+.\cli.ps1 profiles add dev    # Add a profile
+.\cli.ps1 profiles login dev  # Login via SSO
 
-# Add a profile to profiles.yaml (interactive)
-python scripts/manage.py profiles add dev
-python scripts/manage.py profiles add prod
-
-# List configured profiles
-python scripts/manage.py profiles list
-
-# Login via SSO
-python scripts/manage.py profiles login dev
-
-# Check identity
-python scripts/manage.py profiles whoami dev
+# Or directly
+python deployer/scripts/manage.py profiles scan
+python deployer/scripts/manage.py profiles add dev
 ```
 
 ### 1. Bootstrap (one-time per environment)
@@ -101,61 +99,51 @@ Creates foundational resources: S3 bucket, ECR repos, portfolios, products.
 
 ```bash
 # Preview
-python scripts/bootstrap.py bootstrap -e dev --dry-run
+python deployer/scripts/bootstrap.py bootstrap -e dev --dry-run
 
 # Execute
-python scripts/bootstrap.py bootstrap -e dev
+python deployer/scripts/bootstrap.py bootstrap -e dev
 
 # Check status
-python scripts/bootstrap.py status -e dev
+python deployer/scripts/bootstrap.py status -e dev
 ```
 
 ### 2. Publish & Deploy
 
 ```bash
-# Validate configuration
-python scripts/deploy.py validate -e dev
+# Using wrapper
+.\cli.ps1 status              # Check status
+.\cli.ps1                     # Interactive menu -> Deploy
 
-# See what changed and deployment order
-python scripts/deploy.py plan -e dev
-
-# Publish changed products (upload templates, create versions)
-python scripts/deploy.py publish -e dev
-
-# Deploy published products (create/update CloudFormation stacks)
-python scripts/deploy.py deploy -e dev
-
-# Check status
-python scripts/deploy.py status -e dev
+# Or directly
+python deployer/scripts/deploy.py plan -e dev
+python deployer/scripts/deploy.py publish -e dev
+python deployer/scripts/deploy.py deploy -e dev
 ```
 
 ### Options
 
 ```bash
 # Dry run (preview without changes)
-python scripts/deploy.py publish -e dev --dry-run
+python deployer/scripts/deploy.py publish -e dev --dry-run
 
 # Specific product (and its dependents)
-python scripts/deploy.py publish -e dev -p database
+python deployer/scripts/deploy.py publish -e dev -p database
 
 # Override AWS profile/region
-python scripts/deploy.py deploy -e prod --profile my-prod --region us-east-1
+python deployer/scripts/deploy.py deploy -e prod --profile my-prod --region us-east-1
 ```
 
 ### 3. Add Portfolios & Products
 
 ```bash
-# List existing portfolios
-python scripts/manage.py portfolios list
+# Using wrapper
+.\cli.ps1 portfolios add security -e dev
+.\cli.ps1 products add monitoring
 
-# Add a new portfolio (interactive)
-python scripts/manage.py portfolios add security -e dev
-
-# List existing products
-python scripts/manage.py products list
-
-# Add a new product (interactive, creates directory and templates)
-python scripts/manage.py products add monitoring
+# Or directly
+python deployer/scripts/manage.py portfolios add security -e dev
+python deployer/scripts/manage.py products add monitoring
 ```
 
 ## Configuration

@@ -118,7 +118,7 @@ function Test-Requirements {
 function Install-Requirements {
     param($PythonCmd)
     
-    $reqFile = Join-Path $ScriptRoot "requirements.txt"
+    $reqFile = Join-Path $ScriptRoot "deployer\requirements.txt"
     
     Write-Info "  Installing dependencies..."
     & $PythonCmd -m pip install -q -r $reqFile
@@ -214,10 +214,10 @@ function Main {
     Write-Host ""
     
     # Run manage.py
-    $managePath = Join-Path $ScriptRoot "scripts\manage.py"
+    $managePath = Join-Path $ScriptRoot "deployer\scripts\manage.py"
     
     if (-not (Test-Path $managePath)) {
-        Write-Err "  Error: scripts\manage.py not found"
+        Write-Err "  Error: deployer\scripts\manage.py not found"
         exit 1
     }
     
