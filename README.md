@@ -1,160 +1,129 @@
 # SC Deployer
 
-AWS Service Catalog deployment orchestrator with dependency management.
+AWS Service Catalog deployment orchestrator with dependency management, change detection, and Service Catalog provisioning.
 
 ## Features
 
+- **Service Catalog Provisioning**: Deploy products through AWS Service Catalog (not direct CloudFormation)
 - **Dependency Graph**: Products can depend on other products
 - **Output → Parameter Mapping**: Pass outputs from one product as parameters to dependents
-- **Change Detection**: Git-based detection of which products have changed
+- **Change Detection**: Git-based (or hash-based) detection of which products have changed
 - **Cascade Updates**: Changed products trigger redeployment of all dependents
 - **Version Tracking**: Auto-generated versions based on timestamp
-- **Bootstrap**: One-time setup of portfolios, products, ECR repos, S3 bucket
+- **Bootstrap**: One-time setup of portfolios, products, IAM launch roles, S3 bucket
+- **Full CLI Support**: Both interactive menu and non-interactive commands
+
+## Quick Start
+
+```powershell
+# Initialize a new project
+.\cli.ps1 init /path/to/my-project
+cd /path/to/my-project
+
+# Configure AWS profile
+.\cli.ps1 profiles add dev --aws-profile my-aws-profile --region eu-central-1
+
+# Add a portfolio
+.\cli.ps1 portfolios add infrastructure --display-name "Infrastructure" -e dev
+
+# Add products
+.\cli.ps1 products add networking --portfolio infrastructure --output VpcId --output SubnetIds
+.\cli.ps1 products add database --portfolio infrastructure --dependency networking \
+  --param-mapping "VpcId=networking.VpcId" --output DatabaseEndpoint
+
+# Bootstrap AWS resources
+.\cli.ps1 bootstrap dev
+
+# Publish and deploy
+.\cli.ps1 deploy publish dev
+.\cli.ps1 deploy deploy dev
+
+# Check status
+.\cli.ps1 deploy status dev
+```
 
 ## Directory Structure
 
 ```
-sc-deployer/
+my-project/
 ├── cli.ps1                     # Windows PowerShell wrapper
 ├── cli.sh                      # Linux/macOS Bash wrapper
-├── README.md
-├── products/                   # Product definitions (repo root)
+├── products/                   # Product definitions
 │   ├── networking/
-│   │   ├── product.yaml        # Product metadata
-│   │   └── template.yaml       # CloudFormation template
-│   ├── database/
 │   │   ├── product.yaml
-│   │   └── template.yaml
-│   └── api/
+│   │   └── template.yaml       # CloudFormation template
+│   └── database/
 │       ├── product.yaml
 │       └── template.yaml
-└── deployer/                   # Deployer tooling
-    ├── profiles.yaml           # AWS profiles (shared config)
-    ├── bootstrap.yaml          # Bootstrap configuration (portfolios, ECR, S3)
+└── deployer/
+    ├── profiles.yaml           # AWS profiles configuration
+    ├── bootstrap.yaml          # Bootstrap config (portfolios, S3)
     ├── catalog.yaml            # Products and dependencies
-    ├── requirements.txt        # Python dependencies
-    ├── .bootstrap-state.json   # Bootstrap state (generated)
-    ├── .deploy-state.json      # Deploy state (generated)
+    ├── requirements.txt
     └── scripts/
-        ├── config.py           # Shared config loader
-        ├── manage.py           # Management CLI (profiles, portfolios, products)
+        ├── config.py
+        ├── manage.py           # Management CLI
         ├── bootstrap.py        # Bootstrap script
         └── deploy.py           # Deploy script
 ```
 
-## Setup
+## CLI Reference
 
-**Quick start (recommended):**
-
-```powershell
-# Windows PowerShell
-.\cli.ps1
-```
+### Interactive Mode
 
 ```bash
-# Linux/macOS
-./cli.sh
+.\cli.ps1              # Opens interactive menu
 ```
 
-The wrapper scripts automatically:
-- Check Python 3.10+ is installed
-- Create virtual environment (optional)
-- Install dependencies
-- Launch interactive menu
-
-**Manual setup:**
+### Non-Interactive Commands
 
 ```bash
-# Create virtual environment
-python -m venv .venv
+# Project initialization
+manage.py init /path/to/project
 
-# Activate (Windows)
-.\.venv\Scripts\Activate.ps1
+# Profile management
+manage.py profiles list
+manage.py profiles scan
+manage.py profiles add <env> --aws-profile <profile> --region <region>
+manage.py profiles login <env>
+manage.py profiles whoami <env>
 
-# Activate (Linux/macOS)
-source .venv/bin/activate
+# Portfolio management
+manage.py portfolios list
+manage.py portfolios add <name> --display-name "Name" --description "..." -e <env>
 
-# Install dependencies
-pip install -r requirements.txt
-```
+# Product management
+manage.py products list
+manage.py products add <name> --portfolio <portfolio> \
+  --dependency <dep> --output <output> --param-mapping "Param=dep.Output"
 
-## Usage
+# Bootstrap
+manage.py bootstrap <env>
+manage.py bootstrap <env> --dry-run
+manage.py bootstrap <env> --destroy --force
 
-### 0. Configure Profiles
+# Deploy workflow
+manage.py deploy plan <env>
+manage.py deploy publish <env>
+manage.py deploy publish <env> --force       # Publish even if no changes
+manage.py deploy deploy <env>
+manage.py deploy status <env>
+manage.py deploy terminate <env> --force     # Terminate provisioned products
 
-```bash
-# Using wrapper (recommended)
-.\cli.ps1 profiles scan       # Scan available AWS profiles
-.\cli.ps1 profiles add dev    # Add a profile
-.\cli.ps1 profiles login dev  # Login via SSO
-
-# Or directly
-python deployer/scripts/manage.py profiles scan
-python deployer/scripts/manage.py profiles add dev
-```
-
-### 1. Bootstrap (one-time per environment)
-
-Creates foundational resources: S3 bucket, ECR repos, portfolios, products.
-
-```bash
-# Preview
-python deployer/scripts/bootstrap.py bootstrap -e dev --dry-run
-
-# Execute
-python deployer/scripts/bootstrap.py bootstrap -e dev
-
-# Check status
-python deployer/scripts/bootstrap.py status -e dev
-```
-
-### 2. Publish & Deploy
-
-```bash
-# Using wrapper
-.\cli.ps1 status              # Check status
-.\cli.ps1                     # Interactive menu -> Deploy
-
-# Or directly
-python deployer/scripts/deploy.py plan -e dev
-python deployer/scripts/deploy.py publish -e dev
-python deployer/scripts/deploy.py deploy -e dev
-```
-
-### Options
-
-```bash
-# Dry run (preview without changes)
-python deployer/scripts/deploy.py publish -e dev --dry-run
-
-# Specific product (and its dependents)
-python deployer/scripts/deploy.py publish -e dev -p database
-
-# Override AWS profile/region
-python deployer/scripts/deploy.py deploy -e prod --profile my-prod --region us-east-1
-```
-
-### 3. Add Portfolios & Products
-
-```bash
-# Using wrapper
-.\cli.ps1 portfolios add security -e dev
-.\cli.ps1 products add monitoring
-
-# Or directly
-python deployer/scripts/manage.py portfolios add security -e dev
-python deployer/scripts/manage.py products add monitoring
+# Status
+manage.py status
+manage.py graph
 ```
 
 ## Configuration
 
-### profiles.yaml (shared)
+### profiles.yaml
 
 ```yaml
 profiles:
   dev:
     aws_profile: my-aws-dev
-    aws_region: eu-west-1
+    aws_region: eu-central-1
     account_id: "111111111111"
 
   prod:
@@ -167,32 +136,38 @@ profiles:
 
 ```yaml
 settings:
+  state_file: .bootstrap-state.json
   profiles_file: profiles.yaml
 
 template_bucket:
   name_prefix: sc-templates
   versioning: true
+  encryption: AES256
 
-ecr_repositories:
-  - name: api-service
-    scan_on_push: true
+ecr_repositories: []
 
 portfolios:
   infrastructure:
     display_name: Infrastructure Services
+    description: Core infrastructure products
+    provider_name: Platform Team
     principals:
       - arn:aws:iam::${account_id}:role/DevOpsRole
+    tags:
+      Team: Platform
 ```
 
 ### catalog.yaml
 
 ```yaml
 settings:
+  state_file: .deploy-state.json
+  version_format: "%Y.%m.%d.%H%M%S"
   profiles_file: profiles.yaml
 
 products:
   networking:
-    path: products/networking
+    path: networking
     portfolio: infrastructure
     dependencies: []
     outputs:
@@ -200,12 +175,12 @@ products:
       - SubnetIds
 
   database:
-    path: products/database
-    portfolio: data-services
+    path: database
+    portfolio: infrastructure
     dependencies:
       - networking
     parameter_mapping:
-      VpcId: networking.VpcId        # Maps networking.VpcId → database.VpcId
+      VpcId: networking.VpcId
       SubnetIds: networking.SubnetIds
     outputs:
       - DatabaseEndpoint
@@ -219,34 +194,37 @@ products:
 └─────────────┘     └─────────────┘     └─────────────┘
        │                   │                   │
        ▼                   ▼                   ▼
-  Creates:            Uploads:            Creates:
-  - S3 bucket         - Templates         - CloudFormation
-  - ECR repos         - SC versions         stacks
+  Creates:            Uploads:            Provisions:
+  - S3 bucket         - Templates         - Service Catalog
+  - IAM launch role   - SC artifacts        products
   - Portfolios                            - Captures outputs
   - Products
-```
-
-## Version Format
-
-Versions are auto-generated at publish time:
-
-```
-2026.01.30.143052
-```
-
-Format configurable in `catalog.yaml`:
-
-```yaml
-settings:
-  version_format: "%Y.%m.%d.%H%M%S"
+  - Launch constraints
 ```
 
 ## Change Detection
 
-1. Compares current git commit with last published commit per product
+1. Compares current git commit (or file hash) with last published state
 2. If files in product path changed → product is marked changed
-3. All dependents of changed products are also marked for redeployment
-4. Topological sort ensures dependencies deploy before dependents
+3. Only changed products are published (use `--force` to override)
+4. All dependents of changed products are marked for redeployment
+5. Topological sort ensures dependencies deploy before dependents
+
+## Service Catalog Provisioning
+
+Unlike direct CloudFormation deployment, SC Deployer provisions products through AWS Service Catalog:
+
+- Creates IAM launch role with necessary permissions
+- Creates launch constraints for each product
+- Uses `ProvisionProduct` and `UpdateProvisionedProduct` APIs
+- Tracks provisioned product IDs in state
+- Supports `terminate` command to clean up provisioned products
+
+## Requirements
+
+- Python 3.10+
+- AWS CLI configured with appropriate credentials
+- Permissions for: Service Catalog, S3, IAM, CloudFormation
 
 ## License
 
