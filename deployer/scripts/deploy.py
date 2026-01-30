@@ -515,6 +515,21 @@ def get_provisioning_artifact_id(ctx: DeployContext, product_id: str, version: s
     raise ValueError(f"Provisioning artifact not found for version: {version}")
 
 
+def get_launch_path_id(ctx: DeployContext, product_id: str) -> str:
+    """Get the launch path ID for a product."""
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    
+    response = sc.list_launch_paths(ProductId=product_id)
+    launch_paths = response.get("LaunchPathSummaries", [])
+    
+    if not launch_paths:
+        raise ValueError(f"No launch paths found for product {product_id}. Ensure the product is in a portfolio with proper access.")
+    
+    # Return the first available launch path
+    return launch_paths[0]["Id"]
+
+
 def wait_for_provisioned_product(ctx: DeployContext, record_id: str, timeout: int = 600) -> dict:
     """Wait for a provisioned product operation to complete."""
     import time
@@ -543,26 +558,19 @@ def wait_for_provisioned_product(ctx: DeployContext, record_id: str, timeout: in
 
 
 def get_provisioned_product_outputs(ctx: DeployContext, provisioned_product_id: str) -> dict:
-    """Get outputs from a provisioned product's CloudFormation stack."""
+    """Get outputs from a provisioned product."""
     session = get_session(ctx)
     sc = session.client("servicecatalog")
-    cfn = session.client("cloudformation")
     
-    # Get the CloudFormation stack ID from the provisioned product
     try:
-        response = sc.describe_provisioned_product(Id=provisioned_product_id)
-        pp_detail = response.get("ProvisionedProductDetail", {})
-        
-        # The physical ID contains the CloudFormation stack ARN/ID
-        stack_id = pp_detail.get("PhysicalId")
-        if not stack_id:
-            return {}
-        
-        # Get outputs from CloudFormation
-        stack_response = cfn.describe_stacks(StackName=stack_id)
+        response = sc.get_provisioned_product_outputs(
+            ProvisionedProductId=provisioned_product_id
+        )
         outputs = {}
-        for output in stack_response["Stacks"][0].get("Outputs", []):
-            outputs[output["OutputKey"]] = output["OutputValue"]
+        for output in response.get("Outputs", []):
+            # Skip the CloudFormation stack ARN output
+            if output["OutputKey"] != "CloudformationStackARN":
+                outputs[output["OutputKey"]] = output["OutputValue"]
         return outputs
     except Exception:
         return {}
@@ -608,6 +616,9 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
 
     # Get provisioning artifact ID for the version
     artifact_id = get_provisioning_artifact_id(ctx, product_id, version)
+    
+    # Get launch path ID
+    path_id = get_launch_path_id(ctx, product_id)
 
     # Build Service Catalog parameters
     sc_params = [
@@ -628,6 +639,7 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
                 ProvisionedProductId=existing_pp_id,
                 ProductId=product_id,
                 ProvisioningArtifactId=artifact_id,
+                PathId=path_id,
                 ProvisioningParameters=sc_params,
                 Tags=[
                     {"Key": "Environment", "Value": ctx.environment},
@@ -651,6 +663,7 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
             response = sc.provision_product(
                 ProductId=product_id,
                 ProvisioningArtifactId=artifact_id,
+                PathId=path_id,
                 ProvisionedProductName=provisioned_product_name,
                 ProvisioningParameters=sc_params,
                 Tags=[
@@ -674,6 +687,7 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
                         ProvisionedProductId=existing_pp_id,
                         ProductId=product_id,
                         ProvisioningArtifactId=artifact_id,
+                        PathId=path_id,
                         ProvisioningParameters=sc_params,
                         Tags=[
                             {"Key": "Environment", "Value": ctx.environment},
@@ -692,11 +706,8 @@ def deploy_product(ctx: DeployContext, product_name: str) -> dict:
         
         if result["status"] == "SUCCEEDED":
             print("    Provisioning complete")
-            outputs = result.get("outputs", {})
-            
-            # If no outputs from record, try to get from CloudFormation
-            if not outputs and existing_pp_id:
-                outputs = get_provisioned_product_outputs(ctx, existing_pp_id)
+            # Always get outputs from the provisioned product (more reliable than record outputs)
+            outputs = get_provisioned_product_outputs(ctx, existing_pp_id)
         elif result["status"] == "FAILED":
             print(f"    Provisioning FAILED: {result.get('error', 'Unknown error')}")
             raise RuntimeError(f"Provisioning failed: {result.get('error')}")

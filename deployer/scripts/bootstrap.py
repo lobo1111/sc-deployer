@@ -268,6 +268,97 @@ def bootstrap_portfolios(ctx: BootstrapContext) -> dict:
     return results
 
 
+# ============== LAUNCH ROLE ==============
+
+
+def bootstrap_launch_role(ctx: BootstrapContext) -> dict:
+    """Create IAM role for Service Catalog to launch products."""
+    role_name = f"sc-deployer-launch-role-{ctx.environment}"
+    
+    print(f"\n[IAM] Launch role: {role_name}")
+    
+    if ctx.dry_run:
+        print("  [DRY RUN] Would create launch role")
+        return {"name": role_name, "arn": f"arn:aws:iam::{ctx.account_id}:role/{role_name}"}
+    
+    session = get_session(ctx)
+    iam = session.client("iam")
+    
+    # Trust policy for Service Catalog
+    trust_policy = json.dumps({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "servicecatalog.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }]
+    })
+    
+    try:
+        response = iam.create_role(
+            RoleName=role_name,
+            AssumeRolePolicyDocument=trust_policy,
+            Description=f"Service Catalog launch role for {ctx.environment}",
+            Tags=[
+                {"Key": "Environment", "Value": ctx.environment},
+                {"Key": "ManagedBy", "Value": "sc-deployer"},
+            ]
+        )
+        role_arn = response["Role"]["Arn"]
+        print(f"  Created: {role_name}")
+    except iam.exceptions.EntityAlreadyExistsException:
+        response = iam.get_role(RoleName=role_name)
+        role_arn = response["Role"]["Arn"]
+        print(f"  Exists: {role_name}")
+    
+    # Attach policies for CloudFormation and common AWS services
+    policies_to_attach = [
+        "arn:aws:iam::aws:policy/AWSCloudFormationFullAccess",
+        "arn:aws:iam::aws:policy/AmazonS3FullAccess",
+        "arn:aws:iam::aws:policy/AmazonEC2FullAccess",
+        "arn:aws:iam::aws:policy/IAMFullAccess",
+    ]
+    
+    for policy_arn in policies_to_attach:
+        try:
+            iam.attach_role_policy(RoleName=role_name, PolicyArn=policy_arn)
+        except Exception:
+            pass  # Already attached
+    
+    print(f"  Attached policies")
+    
+    return {"name": role_name, "arn": role_arn}
+
+
+def create_launch_constraint(ctx: BootstrapContext, product_id: str, portfolio_id: str, role_arn: str, product_name: str):
+    """Create a launch constraint for a product."""
+    session = get_session(ctx)
+    sc = session.client("servicecatalog")
+    
+    # Check if constraint already exists
+    try:
+        response = sc.list_constraints_for_portfolio(PortfolioId=portfolio_id, ProductId=product_id)
+        for constraint in response.get("ConstraintDetails", []):
+            if constraint["Type"] == "LAUNCH":
+                # Already has a launch constraint
+                return
+    except Exception:
+        pass
+    
+    try:
+        sc.create_constraint(
+            PortfolioId=portfolio_id,
+            ProductId=product_id,
+            Type="LAUNCH",
+            Parameters=json.dumps({"RoleArn": role_arn}),
+            Description=f"Launch constraint for {product_name}",
+        )
+        print(f"    + Launch constraint")
+    except Exception as e:
+        if "already exists" not in str(e).lower():
+            print(f"    [!] Launch constraint failed: {e}")
+
+
 # ============== SERVICE CATALOG PRODUCTS ==============
 
 
@@ -301,11 +392,12 @@ Outputs:
     return f"https://{bucket_name}.s3.{ctx.aws_region}.amazonaws.com/{s3_key}"
 
 
-def bootstrap_products(ctx: BootstrapContext, portfolios: dict, template_bucket: dict) -> dict:
+def bootstrap_products(ctx: BootstrapContext, portfolios: dict, template_bucket: dict, launch_role: dict) -> dict:
     """Create Service Catalog product definitions from catalog.yaml."""
     catalog = load_catalog_config()
     products_config = catalog.get("products", {})
     products_root = get_products_root()
+    launch_role_arn = launch_role.get("arn", "")
 
     if not products_config:
         print("\n[Products] No products in catalog.yaml")
@@ -378,7 +470,7 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict, template_bucket:
             product_arn = response["ProductViewDetail"]["ProductARN"]
             print(f"  Created: {name} ({product_id})")
 
-        # Associate with portfolio
+        # Associate with portfolio and create launch constraint
         if portfolio_key and portfolio_key in portfolios:
             portfolio_id = portfolios[portfolio_key]["id"]
             try:
@@ -388,6 +480,10 @@ def bootstrap_products(ctx: BootstrapContext, portfolios: dict, template_bucket:
                 print(f"    + Portfolio: {portfolio_key}")
             except Exception:
                 pass  # Already associated
+            
+            # Create launch constraint
+            if launch_role_arn:
+                create_launch_constraint(ctx, product_id, portfolio_id, launch_role_arn, name)
 
         results[name] = {"id": product_id, "arn": product_arn}
 
@@ -599,6 +695,54 @@ def destroy_template_bucket(ctx: BootstrapContext) -> bool:
         return False
 
 
+def destroy_launch_role(ctx: BootstrapContext) -> bool:
+    """Delete the Service Catalog launch role."""
+    env_state = ctx.state.get("environments", {}).get(ctx.environment, {})
+    role_info = env_state.get("launch_role", {})
+    role_name = role_info.get("name")
+    
+    if not role_name:
+        print("\n[IAM] No launch role to delete")
+        return False
+    
+    print(f"\n[IAM] Deleting launch role: {role_name}")
+    
+    if ctx.dry_run:
+        print("  [DRY RUN] Would delete launch role")
+        return True
+    
+    session = get_session(ctx)
+    iam = session.client("iam")
+    
+    try:
+        # Detach all policies first
+        try:
+            response = iam.list_attached_role_policies(RoleName=role_name)
+            for policy in response.get("AttachedPolicies", []):
+                iam.detach_role_policy(RoleName=role_name, PolicyArn=policy["PolicyArn"])
+        except Exception:
+            pass
+        
+        # Delete inline policies
+        try:
+            response = iam.list_role_policies(RoleName=role_name)
+            for policy_name in response.get("PolicyNames", []):
+                iam.delete_role_policy(RoleName=role_name, PolicyName=policy_name)
+        except Exception:
+            pass
+        
+        # Delete the role
+        iam.delete_role(RoleName=role_name)
+        print(f"  Deleted: {role_name}")
+        return True
+    except iam.exceptions.NoSuchEntityException:
+        print(f"  Not found: {role_name}")
+        return False
+    except Exception as e:
+        print(f"  [ERROR] {role_name}: {e}")
+        return False
+
+
 # ============== COMMANDS ==============
 
 
@@ -625,11 +769,13 @@ def cmd_destroy(ctx: BootstrapContext, force: bool = False):
     portfolios = env_state.get("portfolios", {})
     ecr_repos = env_state.get("ecr_repositories", {})
     bucket = env_state.get("template_bucket", {}).get("name")
+    launch_role = env_state.get("launch_role", {}).get("name")
     
     print(f"  - {len(products)} Service Catalog product(s)")
     print(f"  - {len(portfolios)} Service Catalog portfolio(s)")
     print(f"  - {len(ecr_repos)} ECR repository(ies)")
     print(f"  - S3 bucket: {bucket or '(none)'}")
+    print(f"  - IAM launch role: {launch_role or '(none)'}")
     
     # Confirmation
     if not ctx.dry_run and not force:
@@ -649,8 +795,11 @@ def cmd_destroy(ctx: BootstrapContext, force: bool = False):
     # 3. ECR repositories
     destroy_ecr_repositories(ctx)
     
-    # 4. S3 bucket (last, as it may contain templates)
+    # 4. S3 bucket
     destroy_template_bucket(ctx)
+    
+    # 5. IAM launch role (last, as it may have been used by constraints)
+    destroy_launch_role(ctx)
     
     # Clear state
     if not ctx.dry_run:
@@ -691,8 +840,11 @@ def cmd_bootstrap(ctx: BootstrapContext):
     # 3. Portfolios
     env_state["portfolios"] = bootstrap_portfolios(ctx)
 
-    # 4. Products
-    env_state["products"] = bootstrap_products(ctx, env_state["portfolios"], env_state["template_bucket"])
+    # 4. Launch role for Service Catalog
+    env_state["launch_role"] = bootstrap_launch_role(ctx)
+
+    # 5. Products (with launch constraints)
+    env_state["products"] = bootstrap_products(ctx, env_state["portfolios"], env_state["template_bucket"], env_state["launch_role"])
 
     # Save state
     if not ctx.dry_run:
