@@ -1939,6 +1939,138 @@ def cmd_products_add(name: str):
 # ============== MAIN ==============
 
 
+def cmd_init(target_dir: str):
+    """Initialize a new project non-interactively."""
+    import shutil
+    
+    target_path = Path(target_dir).resolve()
+    target_path.mkdir(parents=True, exist_ok=True)
+    
+    print(f"Initializing project in: {target_path}")
+    
+    # Create directories
+    dirs_to_create = [
+        target_path / "deployer" / "scripts",
+        target_path / "products",
+    ]
+    
+    for d in dirs_to_create:
+        d.mkdir(parents=True, exist_ok=True)
+    
+    # Copy scripts from source
+    source_deployer = get_project_root()
+    repo_root = get_repo_root()
+    
+    files_to_copy = [
+        (source_deployer / "requirements.txt", target_path / "deployer" / "requirements.txt"),
+        (source_deployer / "scripts" / "config.py", target_path / "deployer" / "scripts" / "config.py"),
+        (source_deployer / "scripts" / "manage.py", target_path / "deployer" / "scripts" / "manage.py"),
+        (source_deployer / "scripts" / "bootstrap.py", target_path / "deployer" / "scripts" / "bootstrap.py"),
+        (source_deployer / "scripts" / "deploy.py", target_path / "deployer" / "scripts" / "deploy.py"),
+        (repo_root / "cli.ps1", target_path / "cli.ps1"),
+        (repo_root / "cli.sh", target_path / "cli.sh"),
+    ]
+    
+    for src, dst in files_to_copy:
+        if src.exists():
+            shutil.copy2(src, dst)
+            print(f"  Created: {dst.relative_to(target_path)}")
+    
+    # Create empty config files
+    profiles_path = target_path / "deployer" / "profiles.yaml"
+    with open(profiles_path, "w") as f:
+        f.write("# AWS profiles configuration\n\nprofiles: {}\n")
+    print(f"  Created: deployer/profiles.yaml")
+    
+    catalog_path = target_path / "deployer" / "catalog.yaml"
+    with open(catalog_path, "w") as f:
+        f.write("""settings:
+  state_file: .deploy-state.json
+  state_backend: local
+  version_format: "%Y.%m.%d.%H%M%S"
+  profiles_file: profiles.yaml
+
+products: {}
+""")
+    print(f"  Created: deployer/catalog.yaml")
+    
+    bootstrap_path = target_path / "deployer" / "bootstrap.yaml"
+    with open(bootstrap_path, "w") as f:
+        f.write("""settings:
+  state_file: .bootstrap-state.json
+  profiles_file: profiles.yaml
+
+template_bucket:
+  name_prefix: sc-templates
+  versioning: true
+  encryption: AES256
+
+ecr_repositories: []
+
+portfolios: {}
+""")
+    print(f"  Created: deployer/bootstrap.yaml")
+    
+    # Create .gitignore
+    gitignore_path = target_path / ".gitignore"
+    with open(gitignore_path, "w") as f:
+        f.write("""# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# IDE
+.idea/
+.vscode/
+
+# State files
+deployer/.deploy-state.json
+deployer/.bootstrap-state.json
+""")
+    print(f"  Created: .gitignore")
+    
+    # Initialize git
+    git_path = target_path / ".git"
+    if not git_path.exists():
+        result = subprocess.run(["git", "init"], capture_output=True, text=True, cwd=target_path)
+        if result.returncode == 0:
+            print(f"  Initialized git repository")
+            subprocess.run(["git", "add", "-A"], capture_output=True, cwd=target_path)
+            subprocess.run(
+                ["git", "commit", "-m", "Initial project setup with SC Deployer"],
+                capture_output=True, cwd=target_path
+            )
+            print(f"  Created initial commit")
+    
+    print(f"\n[OK] Project initialized at {target_path}")
+
+
+def cmd_bootstrap(env: str, action: str = "bootstrap", dry_run: bool = False, force: bool = False):
+    """Run bootstrap command."""
+    script_path = get_project_root() / "scripts" / "bootstrap.py"
+    args = [sys.executable, str(script_path), action, "-e", env]
+    if dry_run:
+        args.append("--dry-run")
+    if force:
+        args.append("--force")
+    subprocess.run(args)
+
+
+def cmd_deploy(env: str, action: str, products: list = None, dry_run: bool = False, force: bool = False):
+    """Run deploy command."""
+    script_path = get_project_root() / "scripts" / "deploy.py"
+    args = [sys.executable, str(script_path), action, "-e", env]
+    if products:
+        for p in products:
+            args.extend(["-p", p])
+    if dry_run:
+        args.append("--dry-run")
+    if force:
+        args.append("--force")
+    subprocess.run(args)
+
+
 def main():
     # If no arguments, launch interactive menu
     if len(sys.argv) == 1:
@@ -1952,18 +2084,36 @@ def main():
         description="SC Deployer Management CLI",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-Run without arguments for interactive menu:
-    python manage.py
+Run without arguments for interactive menu.
 
-Commands:
-    python manage.py profiles list|scan|add|login|whoami
-    python manage.py portfolios list|add
-    python manage.py products list|add
-    python manage.py status
-    python manage.py graph
+Examples:
+  # Initialize new project
+  manage.py init /path/to/project
+
+  # Configure environment
+  manage.py profiles add dev --aws-profile sandbox --region eu-central-1
+
+  # Add portfolio with principal
+  manage.py portfolios add myportfolio --display-name "My Portfolio" --principal "arn:aws:iam::123456789012:root"
+
+  # Add product with dependencies
+  manage.py products add storage --portfolio myportfolio --dependency base --output BucketName --output BucketArn
+
+  # Bootstrap and deploy
+  manage.py bootstrap dev
+  manage.py deploy publish dev
+  manage.py deploy deploy dev
+
+  # Cleanup
+  manage.py deploy terminate dev --force
+  manage.py bootstrap dev --destroy --force
         """,
     )
     subparsers = parser.add_subparsers(dest="command", required=True)
+    
+    # init
+    init_parser = subparsers.add_parser("init", help="Initialize new project")
+    init_parser.add_argument("directory", help="Target directory")
     
     # profiles
     profiles_parser = subparsers.add_parser("profiles", help="Manage AWS profiles")
@@ -1973,8 +2123,10 @@ Commands:
     profiles_sub.add_parser("scan", help="Scan available AWS profiles")
     
     profiles_add = profiles_sub.add_parser("add", help="Add a profile")
-    profiles_add.add_argument("name", help="Environment name")
-    profiles_add.add_argument("--aws-profile", help="AWS profile name")
+    profiles_add.add_argument("name", help="Environment name (e.g., dev, prod)")
+    profiles_add.add_argument("--aws-profile", required=True, help="AWS profile name from ~/.aws/config")
+    profiles_add.add_argument("--region", help="AWS region (auto-detected if not specified)")
+    profiles_add.add_argument("--account-id", help="AWS account ID (auto-detected if not specified)")
     
     profiles_login = profiles_sub.add_parser("login", help="Login via SSO")
     profiles_login.add_argument("name", help="Environment or AWS profile name")
@@ -1990,15 +2142,50 @@ Commands:
     
     portfolios_add = portfolios_sub.add_parser("add", help="Add a portfolio")
     portfolios_add.add_argument("name", help="Portfolio name")
-    portfolios_add.add_argument("-e", "--environment", help="Environment for principal")
+    portfolios_add.add_argument("--display-name", help="Display name (defaults to title-cased name)")
+    portfolios_add.add_argument("--description", default="", help="Portfolio description")
+    portfolios_add.add_argument("--provider", default="Platform Team", help="Provider name")
+    portfolios_add.add_argument("--principal", action="append", dest="principals", default=[], 
+                                help="Principal ARN (can specify multiple)")
+    portfolios_add.add_argument("-e", "--environment", help="Derive principal from environment profile")
     
     # products
     products_parser = subparsers.add_parser("products", help="Manage products")
     products_sub = products_parser.add_subparsers(dest="subcommand", required=True)
     
     products_sub.add_parser("list", help="List products")
+    
     products_add = products_sub.add_parser("add", help="Add a product")
     products_add.add_argument("name", help="Product name")
+    products_add.add_argument("--portfolio", default="", help="Portfolio name")
+    products_add.add_argument("--description", default="", help="Product description")
+    products_add.add_argument("--dependency", action="append", dest="dependencies", default=[],
+                              help="Dependency product name (can specify multiple)")
+    products_add.add_argument("--output", action="append", dest="outputs", default=[],
+                              help="Output name (can specify multiple)")
+    products_add.add_argument("--param-mapping", action="append", dest="mappings", default=[],
+                              help="Parameter mapping in format 'ParamName=product.output'")
+    
+    # bootstrap
+    bootstrap_parser = subparsers.add_parser("bootstrap", help="Bootstrap AWS infrastructure")
+    bootstrap_parser.add_argument("environment", help="Environment name")
+    bootstrap_parser.add_argument("--dry-run", action="store_true", help="Preview changes")
+    bootstrap_parser.add_argument("--destroy", action="store_true", help="Destroy resources")
+    bootstrap_parser.add_argument("--force", action="store_true", help="Skip confirmations")
+    
+    # deploy
+    deploy_parser = subparsers.add_parser("deploy", help="Deploy products")
+    deploy_sub = deploy_parser.add_subparsers(dest="action", required=True)
+    
+    for action in ["plan", "publish", "deploy", "status", "terminate"]:
+        action_parser = deploy_sub.add_parser(action, help=f"{action.title()} products")
+        action_parser.add_argument("environment", help="Environment name")
+        if action in ["publish", "deploy", "terminate"]:
+            action_parser.add_argument("-p", "--product", action="append", dest="products",
+                                       help="Specific product(s)")
+            action_parser.add_argument("--dry-run", action="store_true", help="Preview changes")
+        if action in ["publish", "terminate"]:
+            action_parser.add_argument("--force", action="store_true", help="Force action")
     
     # status & graph
     subparsers.add_parser("status", help="Show overall status")
@@ -2006,13 +2193,48 @@ Commands:
     
     args = parser.parse_args()
     
-    if args.command == "profiles":
+    if args.command == "init":
+        cmd_init(args.directory)
+    
+    elif args.command == "profiles":
         if args.subcommand == "list":
             cmd_profiles_list()
         elif args.subcommand == "scan":
             cmd_profiles_scan()
         elif args.subcommand == "add":
-            cmd_profiles_add(args.name, getattr(args, "aws_profile", None))
+            # Non-interactive add
+            aws_profiles = scan_aws_profiles()
+            aws_profile_data = next((p for p in aws_profiles if p["name"] == args.aws_profile), {})
+            
+            region = args.region or aws_profile_data.get("region") or "eu-west-1"
+            account_id = args.account_id or aws_profile_data.get("sso_account_id", "")
+            
+            if not account_id:
+                identity = get_caller_identity(args.aws_profile)
+                if identity:
+                    account_id = identity["account_id"]
+            
+            profiles_path = get_project_root() / "profiles.yaml"
+            if profiles_path.exists():
+                with open(profiles_path) as f:
+                    data = yaml.safe_load(f) or {}
+            else:
+                data = {}
+            
+            data.setdefault("profiles", {})[args.name] = {
+                "aws_profile": args.aws_profile,
+                "aws_region": region,
+                "account_id": account_id,
+            }
+            
+            with open(profiles_path, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+            
+            print(f"[OK] Environment '{args.name}' added")
+            print(f"     AWS Profile: {args.aws_profile}")
+            print(f"     Region:      {region}")
+            print(f"     Account ID:  {account_id}")
+        
         elif args.subcommand == "login":
             cmd_profiles_login(args.name)
         elif args.subcommand == "whoami":
@@ -2022,13 +2244,140 @@ Commands:
         if args.subcommand == "list":
             cmd_portfolios_list()
         elif args.subcommand == "add":
-            cmd_portfolios_add(args.name, getattr(args, "environment", None))
+            # Non-interactive add
+            bootstrap_path = get_project_root() / "bootstrap.yaml"
+            with open(bootstrap_path) as f:
+                config = yaml.safe_load(f)
+            
+            principals = list(args.principals) if args.principals else []
+            
+            # Add principal from environment if specified
+            if args.environment:
+                configured = get_configured_profiles()
+                if args.environment in configured:
+                    aws_profile = configured[args.environment].get("aws_profile")
+                    principal = get_profile_principal(aws_profile)
+                    if principal and principal not in principals:
+                        principals.append(principal)
+                        print(f"Added principal from {args.environment}: {principal}")
+            
+            display_name = args.display_name or args.name.replace("-", " ").replace("_", " ").title()
+            
+            config.setdefault("portfolios", {})[args.name] = {
+                "display_name": display_name,
+                "description": args.description,
+                "provider_name": args.provider,
+                "principals": principals,
+                "tags": {},
+            }
+            
+            with open(bootstrap_path, "w") as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            
+            print(f"[OK] Portfolio '{args.name}' added")
     
     elif args.command == "products":
         if args.subcommand == "list":
             cmd_products_list()
         elif args.subcommand == "add":
-            cmd_products_add(args.name)
+            # Non-interactive add
+            catalog = load_catalog_config()
+            
+            if args.name in catalog.get("products", {}):
+                print(f"[ERROR] Product '{args.name}' already exists")
+                sys.exit(1)
+            
+            # Parse parameter mappings
+            parameter_mapping = {}
+            for mapping in args.mappings:
+                if "=" in mapping:
+                    param, source = mapping.split("=", 1)
+                    parameter_mapping[param] = source
+            
+            # Create directory and files
+            products_dir = get_products_root() / args.name
+            products_dir.mkdir(parents=True, exist_ok=True)
+            
+            # product.yaml
+            product_yaml = {
+                "name": args.name,
+                "description": args.description,
+                "portfolio": args.portfolio,
+            }
+            
+            with open(products_dir / "product.yaml", "w") as f:
+                yaml.dump(product_yaml, f, default_flow_style=False, sort_keys=False)
+            
+            # template.yaml
+            template = f"""AWSTemplateFormatVersion: '2010-09-09'
+Description: {args.description or f'CloudFormation template for {args.name}'}
+
+Parameters:
+  Environment:
+    Type: String
+    Default: dev
+"""
+            for param in parameter_mapping:
+                template += f"""
+  {param}:
+    Type: String
+    Description: Mapped from {parameter_mapping[param]}
+"""
+            
+            template += """
+Resources:
+  # TODO: Add your resources here
+  PlaceholderResource:
+    Type: AWS::CloudFormation::WaitConditionHandle
+
+Outputs:
+"""
+            for output in args.outputs:
+                template += f"""  {output}:
+    Description: {output}
+    Value: !Ref PlaceholderResource
+    Export:
+      Name: !Sub "${{Environment}}-{output}"
+"""
+            
+            with open(products_dir / "template.yaml", "w") as f:
+                f.write(template)
+            
+            # Update catalog.yaml
+            product_config = {
+                "path": args.name,
+                "portfolio": args.portfolio,
+                "dependencies": args.dependencies,
+            }
+            
+            if parameter_mapping:
+                product_config["parameter_mapping"] = parameter_mapping
+            
+            if args.outputs:
+                product_config["outputs"] = args.outputs
+            
+            catalog.setdefault("products", {})[args.name] = product_config
+            
+            catalog_path = get_project_root() / "catalog.yaml"
+            with open(catalog_path, "w") as f:
+                yaml.dump(catalog, f, default_flow_style=False, sort_keys=False)
+            
+            print(f"[OK] Product '{args.name}' created")
+            print(f"     products/{args.name}/product.yaml")
+            print(f"     products/{args.name}/template.yaml")
+    
+    elif args.command == "bootstrap":
+        action = "destroy" if args.destroy else "bootstrap"
+        cmd_bootstrap(args.environment, action, args.dry_run, args.force)
+    
+    elif args.command == "deploy":
+        cmd_deploy(
+            args.environment,
+            args.action,
+            getattr(args, "products", None),
+            getattr(args, "dry_run", False),
+            getattr(args, "force", False)
+        )
     
     elif args.command == "status":
         show_status()
