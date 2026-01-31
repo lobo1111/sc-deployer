@@ -1,6 +1,10 @@
-# State files (may contain sensitive info)
-.deploy-state.json
-.bootstrap-state.json
+## `scd` project state files (may contain sensitive info)
+.deployer/.deploy-state.json
+.deployer/.bootstrap-state.json
+
+## Rust
+target/
+Cargo.lock
 
 # Python
 __pycache__/

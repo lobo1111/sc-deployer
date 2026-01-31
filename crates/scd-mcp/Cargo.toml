@@ -1,0 +1,16 @@
+[package]
+name = "scd-mcp"
+version = "1.2.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+anyhow = "1"
+rmcp = { version = "0.14", features = ["server", "transport-io", "schemars"] }
+schemars = "1"
+serde = { version = "1", features = ["derive"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "process", "io-std", "io-util"] }
+
+[dev-dependencies]
+rmcp = { version = "0.14", features = ["client", "transport-child-process"] }
+
