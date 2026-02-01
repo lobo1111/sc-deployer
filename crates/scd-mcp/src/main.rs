@@ -170,6 +170,9 @@ struct DeployApplyParams {
     /// If true, print intended actions without changing AWS.
     #[serde(default)]
     dry_run: bool,
+    /// If true, apply even if already at current published version.
+    #[serde(default)]
+    force: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
@@ -367,6 +370,9 @@ impl ScdMcp {
         if p.dry_run {
             args.push("--dry-run".into());
         }
+        if p.force {
+            args.push("--force".into());
+        }
         run_scd(&p.base.common, args).await
     }
 
@@ -427,9 +433,26 @@ impl ServerHandler for ScdMcp {
 ## How to use these tools well
 
 - Prefer editing YAML first, then running `scd_sync` (and deploy commands when needed).
+- Use `.deployer/catalog.yaml` to define products. You can set a **per-product launch role** using `launch_role_arn`.
+- Use `.deployer/profiles.yaml` to define per-environment **per-product provisioning parameters** using `product_parameters`.
 - For safety, use `dry_run: true` where available before making AWS changes.
 - Provide `cwd` if you want to target a specific folder.
-- Provide `project` if scd discovery fails (project = folder containing `.deployer/`)."#
+- Provide `project` if scd discovery fails (project = folder containing `.deployer/`).
+
+## Launch roles (Service Catalog LAUNCH constraint)
+
+Service Catalog uses a LAUNCH constraint to decide which IAM role CloudFormation assumes when provisioning a product.
+
+- Default behavior: `scd sync` creates one environment-wide launch role named `scd-launch-role-<environment>` and uses it for products that don't specify `launch_role_arn`.
+- Per-product behavior:
+  - If a product sets `launch_role`, `scd sync` will create/ensure that IAM role exists and then use it for the product's LAUNCH constraint.
+  - If a product sets `launch_role_arn`, `scd sync` uses that pre-existing role ARN when creating the product's LAUNCH constraint.
+
+Important notes:
+- `launch_role_arn` must be an IAM role ARN that exists in the target account.
+- If you want scd to create the role, use `launch_role` instead.
+- `launch_role` supports both `managed_policy_arns` and `inline_policies` (policy name -> policy document) which are applied via IAM `PutRolePolicy` during `scd sync`.
+- You can use `${account_id}` in `launch_role_arn` and scd will expand it during `scd sync`."#
                     .into(),
             ),
             capabilities: ServerCapabilities::builder().enable_tools().build(),

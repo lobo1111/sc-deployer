@@ -218,6 +218,10 @@ pub enum DeployCommand {
 
         #[arg(long)]
         dry_run: bool,
+
+        /// Apply even if already at the current published version
+        #[arg(long)]
+        force: bool,
     },
 
     /// Show deploy status
@@ -338,8 +342,9 @@ pub async fn run(root: RootCmd) -> Result<()> {
                     environment,
                     products,
                     dry_run,
+                    force,
                 } => {
-                    deploy::apply(&layout, environment, products, dry_run).await?;
+                    deploy::apply(&layout, environment, products, dry_run, force).await?;
                     println!("Apply complete.");
                     Ok(())
                 }

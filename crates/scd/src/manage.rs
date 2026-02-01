@@ -42,6 +42,11 @@ pub async fn profiles_set(
     } else {
         config::ProfilesFile::default()
     };
+    let existing_product_parameters = pf
+        .profiles
+        .get(&environment)
+        .map(|p| p.product_parameters.clone())
+        .unwrap_or_default();
 
     pf.profiles.insert(
         environment.clone(),
@@ -49,6 +54,7 @@ pub async fn profiles_set(
             aws_profile: aws_profile.clone(),
             aws_region: region.clone(),
             account_id: account_id.clone(),
+            product_parameters: existing_product_parameters,
         },
     );
     config::save_yaml(&path, &pf)?;
@@ -193,6 +199,8 @@ pub fn products_add(
         config::ProductSpec {
             path: product_path,
             portfolio: portfolio.unwrap_or_default(),
+            launch_role: None,
+            launch_role_arn: None,
             ecr_repository: None,
             dependencies,
             parameter_mapping: pm,

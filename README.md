@@ -39,10 +39,83 @@
 - `scd deploy validate -e <env>`
 - `scd deploy plan -e <env> [-p <product>...]`
 - `scd deploy publish -e <env> [-p <product>...] [--dry-run] [--force]`
-- `scd deploy apply -e <env> [-p <product>...] [--dry-run]`
+- `scd deploy apply -e <env> [-p <product>...] [--dry-run] [--force]`
 - `scd deploy status -e <env>`
 - `scd deploy terminate -e <env> [-p <product>...] [--dry-run] [--force]`
 - `scd destroy -e <env> [--dry-run] [--force]`
+
+### `profiles.yaml`: product parameter values
+
+You can define **per-environment, per-product provisioning parameter values** in `.deployer/profiles.yaml`:
+
+```yaml
+profiles:
+  dev:
+    aws_profile: sandbox
+    aws_region: us-east-1
+    account_id: "111111111111"
+    product_parameters:
+      networking:
+        VpcCidr: 10.0.0.0/16
+      database:
+        DbName: app
+```
+
+These values are merged into the parameters sent during `scd deploy apply` (after dependency-based mappings), and `scd` always sets `Environment` automatically.
+
+### Deploy: publish/apply changed-only
+
+By default:
+
+- `scd deploy publish` **skips** products whose `template.yaml` hasn't changed since the last publish (based on a stored template hash). Use `--force` to publish anyway.
+- `scd deploy apply` **skips** products that have already applied the currently published version. Use `--force` to apply anyway.
+
+### `catalog.yaml`: per-product launch role
+
+Service Catalog uses a **LAUNCH constraint** to decide what IAM role CloudFormation will assume for a product.
+By default, `scd sync` creates an environment-wide launch role and uses it for all products.
+
+If you want **scd to create the role** (so it definitely exists before provisioning), define `launch_role` on the product:
+
+```yaml
+products:
+  database:
+    path: database
+    portfolio: infra
+    launch_role:
+      name: DatabaseLaunchRole
+      managed_policy_arns:
+        - arn:aws:iam::aws:policy/AWSCloudFormationFullAccess
+        - arn:aws:iam::aws:policy/AmazonRDSFullAccess
+      inline_policies:
+        AllowReadParams:
+          Version: "2012-10-17"
+          Statement:
+            - Effect: Allow
+              Action:
+                - ssm:GetParameter
+                - ssm:GetParameters
+              Resource: "*"
+```
+
+If you already have a role and just want `scd` to use it, set `launch_role_arn` on that product in `.deployer/catalog.yaml`:
+
+```yaml
+products:
+  database:
+    path: database
+    portfolio: infra
+    launch_role_arn: arn:aws:iam::${account_id}:role/DatabaseLaunchRole
+    dependencies: []
+    parameter_mapping: {}
+    outputs: []
+```
+
+How `scd sync` behaves:
+
+- If `launch_role` is set: `scd sync` creates/ensures that IAM role exists, then uses it for the product's LAUNCH constraint.
+- Else if `launch_role_arn` is set: `scd sync` uses that existing role ARN for the product's LAUNCH constraint.
+- Else: `scd sync` uses the environment default role (`scd-launch-role-<environment>`).
 
 ### Shell autocompletion
 

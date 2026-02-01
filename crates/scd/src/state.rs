@@ -35,6 +35,7 @@ pub struct BootstrapEnvState {
 
     // Minimal cache fields; AWS ids/arns will be filled during `sync`.
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub template_bucket: Option<ResourceRef>,
 
     #[serde(default)]
@@ -47,9 +48,11 @@ pub struct BootstrapEnvState {
     pub products: BTreeMap<String, ResourceRef>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub launch_role: Option<ResourceRef>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub bootstrapped_at: Option<String>,
 }
 
@@ -85,27 +88,40 @@ pub struct DeployEnvState {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct DeployProductState {
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub version: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub published_at: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub published_commit: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub published_hash: Option<String>,
 
+    /// The version last successfully applied to AWS (used for "changed-only" apply).
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployed_version: Option<String>,
+
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed_at: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub deployed_commit: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provisioned_product_id: Option<String>,
 
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub provisioned_product_name: Option<String>,
 
     #[serde(default)]
@@ -115,12 +131,16 @@ pub struct DeployProductState {
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
 pub struct ResourceRef {
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub id: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub arn: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub uri: Option<String>,
 }
 
@@ -145,6 +165,7 @@ pub fn save_json<T: Serialize>(path: &Path, value: &T) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::fs;
 
     #[test]
     fn json_roundtrip_bootstrap_state() {
@@ -168,6 +189,33 @@ mod tests {
         save_json(&path, &st).unwrap();
         let loaded: BootstrapState = load_json(&path).unwrap();
         assert_eq!(loaded, st);
+    }
+
+    #[test]
+    fn deploy_state_does_not_emit_null_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(".deploy-state.json");
+
+        let mut st = DeployState::default();
+        let mut env = DeployEnvState::default();
+        env.products.insert(
+            "p".to_string(),
+            DeployProductState {
+                // Leave most optional fields as None
+                outputs: BTreeMap::new(),
+                ..Default::default()
+            },
+        );
+        st.environments.insert("dev".to_string(), env);
+
+        save_json(&path, &st).unwrap();
+        let s = fs::read_to_string(&path).unwrap();
+
+        // Ensure we don't serialize absent optional fields as `null`
+        assert!(!s.contains(": null"));
+        assert!(!s.contains("\"published_commit\""));
+        assert!(!s.contains("\"published_hash\""));
+        assert!(!s.contains("\"deployed_commit\""));
     }
 }
 

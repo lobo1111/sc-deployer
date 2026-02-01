@@ -34,6 +34,7 @@ This is a **manual / CI-on-demand** plan to validate the full `scd` functionalit
      - ensure products are assigned to a portfolio so they have a launch path
      - `scd products add --name networking --portfolio infra --output VpcId`
      - `scd products add --name database --portfolio infra --dependency networking --param-mapping VpcId=networking.VpcId --output DbEndpoint`
+     - (optional) if you need distinct permissions per product, set `launch_role_arn` in `.deployer/catalog.yaml`
 5. Sync desired state to AWS:
    - `scd sync -e sandbox`
 6. Publish + apply:

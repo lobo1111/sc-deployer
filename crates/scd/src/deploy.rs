@@ -1,6 +1,7 @@
 use crate::{config, project, state};
 use anyhow::{Context, Result};
 use aws_types::region::Region;
+use sha2::Digest;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::time::Duration;
 use time::format_description::well_known::Rfc3339;
@@ -11,6 +12,7 @@ struct AwsEnv {
     aws_profile: String,
     aws_region: String,
     account_id: String,
+    product_parameters: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 fn load_env(layout: &project::ProjectLayout, environment: &str) -> Result<AwsEnv> {
@@ -27,6 +29,7 @@ fn load_env(layout: &project::ProjectLayout, environment: &str) -> Result<AwsEnv
         aws_profile: p.aws_profile.clone(),
         aws_region: p.aws_region.clone(),
         account_id: p.account_id.clone(),
+        product_parameters: p.product_parameters.clone(),
     })
 }
 
@@ -78,6 +81,38 @@ fn topo_sort(products: &BTreeMap<String, config::ProductSpec>, subset: &BTreeSet
 
 pub async fn validate(layout: &project::ProjectLayout, environment: String) -> Result<()> {
     let catalog = load_catalog(layout)?;
+
+    // Profile config validation (parameter overrides)
+    {
+        let profiles: config::ProfilesFile = config::load_yaml(&layout.profiles_yaml())
+            .with_context(|| format!("load {}", layout.profiles_yaml().display()))?;
+        let prof = profiles.profiles.get(&environment).with_context(|| {
+            format!(
+                "environment '{}' not configured (run `scd connect -e {}`)",
+                environment, environment
+            )
+        })?;
+
+        for (product, params) in &prof.product_parameters {
+            if !catalog.products.contains_key(product) {
+                anyhow::bail!(
+                    "profile '{environment}': product_parameters references unknown product '{product}'"
+                );
+            }
+            for (k, _) in params {
+                if k.trim().is_empty() {
+                    anyhow::bail!(
+                        "profile '{environment}': product_parameters for '{product}' contains an empty parameter name"
+                    );
+                }
+                if k == "Environment" {
+                    anyhow::bail!(
+                        "profile '{environment}': product_parameters for '{product}' must not set 'Environment' (scd manages it)"
+                    );
+                }
+            }
+        }
+    }
 
     // Cycle detection
     {
@@ -185,6 +220,34 @@ fn generate_version() -> String {
     )
 }
 
+fn sha256_hex(data: &[u8]) -> String {
+    let mut h = sha2::Sha256::new();
+    h.update(data);
+    let out = h.finalize();
+    let mut s = String::with_capacity(out.len() * 2);
+    for b in out {
+        s.push_str(&format!("{:02x}", b));
+    }
+    s
+}
+
+fn git_head_commit(layout: &project::ProjectLayout) -> Option<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(&layout.root)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&out.stdout).trim().to_string();
+    if s.is_empty() {
+        None
+    } else {
+        Some(s)
+    }
+}
+
 fn resolve_parameters(
     catalog: &config::CatalogFile,
     deploy_env: &state::DeployEnvState,
@@ -212,7 +275,7 @@ pub async fn publish(
     environment: String,
     products: Vec<String>,
     dry_run: bool,
-    _force: bool,
+    force: bool,
 ) -> Result<()> {
     validate(layout, environment.clone()).await?;
 
@@ -242,6 +305,7 @@ pub async fn publish(
     let sc = aws_sdk_servicecatalog::Client::new(&shared);
 
     let version = generate_version();
+    let commit = git_head_commit(layout);
     let deploy_state_path = layout.deployer_dir().join(catalog.settings.state_file.clone());
     let mut dst: state::DeployState = state::load_json(&deploy_state_path)?;
     let env_state = dst
@@ -249,13 +313,14 @@ pub async fn publish(
         .entry(environment.clone())
         .or_insert_with(state::DeployEnvState::default);
 
-    let to_publish: Vec<String> = if products.is_empty() {
+    let candidates: Vec<String> = if products.is_empty() {
         catalog.products.keys().cloned().collect()
     } else {
         products
     };
 
-    for p in &to_publish {
+    let mut published_any = false;
+    for p in &candidates {
         let product_id = env_bootstrap
             .products
             .get(p)
@@ -266,6 +331,22 @@ pub async fn publish(
         let template_path = product_path.join("template.yaml");
         let template_body = std::fs::read(&template_path)
             .with_context(|| format!("read {}", template_path.display()))?;
+        let template_hash = sha256_hex(&template_body);
+
+        let existing = env_state.products.get(p).cloned().unwrap_or_default();
+        let already_published = existing
+            .published_hash
+            .as_ref()
+            .map(|h| h == &template_hash)
+            .unwrap_or(false);
+
+        // "Changed-only" publish:
+        // - If user explicitly listed products, we still skip unchanged unless --force.
+        // - If no products were specified, we publish only changed unless --force.
+        if !force && already_published {
+            println!("Skipping {p}: template unchanged");
+            continue;
+        }
 
         let s3_key = format!("{}/{}/template.yaml", p, version);
         let template_url = format!(
@@ -277,6 +358,7 @@ pub async fn publish(
         if dry_run {
             println!("  [DRY RUN] upload s3://{bucket_name}/{s3_key}");
             println!("  [DRY RUN] create provisioning artifact for product {product_id}");
+            published_any = true;
             continue;
         }
 
@@ -313,6 +395,13 @@ pub async fn publish(
                 .format(&Rfc3339)
                 .unwrap_or_else(|_| "unknown".to_string()),
         );
+        ps.published_hash = Some(template_hash);
+        ps.published_commit = commit.clone();
+        published_any = true;
+    }
+
+    if !published_any {
+        println!("No products to publish (no changes detected).");
     }
 
     if !dry_run {
@@ -406,6 +495,7 @@ pub async fn apply(
     environment: String,
     products: Vec<String>,
     dry_run: bool,
+    force: bool,
 ) -> Result<()> {
     validate(layout, environment.clone()).await?;
 
@@ -447,6 +537,16 @@ pub async fn apply(
             .version
             .clone()
             .with_context(|| format!("product '{p}' not published yet (run `scd deploy publish -e {environment}`)"))?;
+
+        // "Changed-only" apply: skip if already applied the currently-published version.
+        if !force {
+            if let Some(dv) = ps.deployed_version.as_ref() {
+                if dv == &version && ps.provisioned_product_id.is_some() {
+                    println!("Skipping {p}: already applied version {version}");
+                    continue;
+                }
+            }
+        }
         let product_id = env_bootstrap
             .products
             .get(&p)
@@ -458,6 +558,15 @@ pub async fn apply(
 
         let mut params = resolve_parameters(&catalog, env_state, &p)?;
         params.insert("Environment".to_string(), environment.clone());
+        if let Some(overrides) = env.product_parameters.get(&p) {
+            for (k, v) in overrides {
+                // Reserved parameter is validated elsewhere; keep this defensive anyway.
+                if k == "Environment" {
+                    continue;
+                }
+                params.insert(k.clone(), v.clone());
+            }
+        }
         let prov_params: Vec<aws_sdk_servicecatalog::types::ProvisioningParameter> = params
             .iter()
             .map(|(k, v)| {
@@ -554,6 +663,7 @@ pub async fn apply(
             .or_insert_with(state::DeployProductState::default);
         ps_mut.provisioned_product_id = Some(pp_id.clone());
         ps_mut.provisioned_product_name = Some(provisioned_name);
+        ps_mut.deployed_version = Some(version);
         ps_mut.deployed_at = Some(
             time::OffsetDateTime::now_utc()
                 .format(&Rfc3339)

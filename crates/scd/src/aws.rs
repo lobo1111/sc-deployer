@@ -32,6 +32,10 @@ pub async fn connect(
     };
 
     let existing = profiles.profiles.get(&environment).cloned();
+    let existing_product_parameters = existing
+        .as_ref()
+        .map(|p| p.product_parameters.clone())
+        .unwrap_or_default();
 
     let resolved_profile = aws_profile
         .or_else(|| existing.as_ref().map(|p| p.aws_profile.clone()))
@@ -83,6 +87,7 @@ pub async fn connect(
             aws_profile: resolved_profile,
             aws_region: resolved_region,
             account_id: resolved_account,
+            product_parameters: existing_product_parameters,
         },
     );
 
@@ -99,6 +104,38 @@ pub async fn sync(layout: &project::ProjectLayout, environment: String, dry_run:
         .with_context(|| format!("load {}", bootstrap_path.display()))?;
     let catalog: config::CatalogFile = config::load_yaml(&catalog_path)
         .with_context(|| format!("load {}", catalog_path.display()))?;
+
+    // Validate catalog launch role settings early (sync does not run `deploy validate`).
+    for (name, spec) in &catalog.products {
+        if spec.launch_role.is_some() && spec.launch_role_arn.is_some() {
+            anyhow::bail!(
+                "product '{name}': set either launch_role (managed by scd) OR launch_role_arn (pre-existing role), not both"
+            );
+        }
+        if let Some(lr) = &spec.launch_role {
+            if let Some(list) = &lr.managed_policy_arns {
+                for arn in list {
+                    if arn.trim().is_empty() {
+                        anyhow::bail!(
+                            "product '{name}': launch_role.managed_policy_arns contains an empty policy ARN"
+                        );
+                    }
+                }
+            }
+            if let Some(inline) = &lr.inline_policies {
+                for (pn, doc) in inline {
+                    if pn.trim().is_empty() {
+                        anyhow::bail!(
+                            "product '{name}': launch_role.inline_policies contains an empty policy name"
+                        );
+                    }
+                    // Ensure it can serialize to JSON (IAM expects JSON).
+                    let _ = serde_json::to_string(doc)
+                        .with_context(|| format!("product '{name}': invalid inline policy document for '{pn}'"))?;
+                }
+            }
+        }
+    }
 
     let shared = aws_config::from_env()
         .profile_name(&env.aws_profile)
@@ -178,19 +215,28 @@ pub async fn sync(layout: &project::ProjectLayout, environment: String, dry_run:
             if let Some(portfolio) = env_state.portfolios.get(&spec.portfolio) {
                 if let (Some(product_id), Some(portfolio_id)) = (pr.id.clone(), portfolio.id.clone()) {
                     ensure_product_in_portfolio(&sc, &product_id, &portfolio_id, dry_run).await?;
-                    if let (Some(role_arn), Some(product_name)) =
-                        (launch_role.arn.clone(), Some(name.clone()))
-                    {
-                        ensure_launch_constraint(
-                            &sc,
-                            &portfolio_id,
-                            &product_id,
-                            &role_arn,
-                            &product_name,
-                            dry_run,
-                        )
-                        .await?;
-                    }
+                    // Launch constraint: allow per-product override, otherwise use environment default role.
+                    let role_arn = if let Some(lr) = &spec.launch_role {
+                        // Ensure the role exists before we create the launch constraint.
+                        let rr = ensure_product_launch_role(&iam, &env, name, lr, dry_run).await?;
+                        rr.arn.clone().context("product launch role missing arn")?
+                    } else {
+                        spec.launch_role_arn
+                            .clone()
+                            .filter(|s| !s.trim().is_empty())
+                            .or_else(|| launch_role.arn.clone())
+                            .context("missing launch role arn (env default launch role has no arn)")?
+                    };
+
+                    ensure_launch_constraint(
+                        &sc,
+                        &portfolio_id,
+                        &product_id,
+                        &role_arn.replace("${account_id}", &env.account_id),
+                        name,
+                        dry_run,
+                    )
+                    .await?;
                 }
             } else {
                 anyhow::bail!(
@@ -593,6 +639,133 @@ async fn ensure_launch_role(
     })
 }
 
+async fn ensure_product_launch_role(
+    iam: &aws_sdk_iam::Client,
+    env: &AwsEnv,
+    product_key: &str,
+    spec: &config::LaunchRoleSpec,
+    dry_run: bool,
+) -> Result<state::ResourceRef> {
+    let role_name = spec
+        .name
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| format!("scd-launch-role-{}-{}", env.environment, product_key));
+
+    let role = iam.get_role().role_name(&role_name).send().await;
+    let arn = match role {
+        Ok(out) => out
+            .role()
+            .map(|r| r.arn().to_string())
+            .unwrap_or_default(),
+        Err(_) => {
+            if dry_run {
+                println!("[DRY RUN] create iam role {role_name}");
+                format!("arn:aws:iam::{}:role/{role_name}", env.account_id)
+            } else {
+                let trust = serde_json::json!({
+                  "Version": "2012-10-17",
+                  "Statement": [{
+                    "Effect": "Allow",
+                    "Principal": {"Service": "servicecatalog.amazonaws.com"},
+                    "Action": "sts:AssumeRole"
+                  }]
+                })
+                .to_string();
+
+                let out = iam
+                    .create_role()
+                    .role_name(&role_name)
+                    .assume_role_policy_document(trust)
+                    .description(format!(
+                        "Service Catalog launch role for {} (product {})",
+                        env.environment, product_key
+                    ))
+                    .tags(
+                        aws_sdk_iam::types::Tag::builder()
+                            .key(TAG_MANAGED_BY_KEY)
+                            .value(TAG_MANAGED_BY_VALUE)
+                            .build()?,
+                    )
+                    .tags(
+                        aws_sdk_iam::types::Tag::builder()
+                            .key(TAG_ENV_KEY)
+                            .value(&env.environment)
+                            .build()?,
+                    )
+                    .tags(
+                        aws_sdk_iam::types::Tag::builder()
+                            .key("ProductKey")
+                            .value(product_key)
+                            .build()?,
+                    )
+                    .send()
+                    .await
+                    .context("create role")?;
+
+                out.role()
+                    .map(|r| r.arn().to_string())
+                    .unwrap_or_default()
+            }
+        }
+    };
+
+    // Attach managed policies
+    let policies: Vec<String> = match &spec.managed_policy_arns {
+        Some(v) => v.clone(),
+        None => vec![
+            "arn:aws:iam::aws:policy/AWSCloudFormationFullAccess".to_string(),
+            "arn:aws:iam::aws:policy/AmazonS3FullAccess".to_string(),
+            "arn:aws:iam::aws:policy/AmazonEC2FullAccess".to_string(),
+            "arn:aws:iam::aws:policy/IAMFullAccess".to_string(),
+        ],
+    };
+
+    if dry_run {
+        if policies.is_empty() {
+            println!("[DRY RUN] no managed policies to attach to {role_name}");
+        } else {
+            println!(
+                "[DRY RUN] attach {} managed policy(s) to {role_name}",
+                policies.len()
+            );
+        }
+    } else {
+        for p in policies {
+            let _ = iam
+                .attach_role_policy()
+                .role_name(&role_name)
+                .policy_arn(p)
+                .send()
+                .await;
+        }
+    }
+
+    // Inline policies
+    if let Some(inline) = &spec.inline_policies {
+        for (policy_name, policy_doc) in inline {
+            if dry_run {
+                println!("[DRY RUN] put inline policy {policy_name} on {role_name}");
+                continue;
+            }
+            let doc = serde_json::to_string(policy_doc).context("serialize inline policy document")?;
+            let _ = iam
+                .put_role_policy()
+                .role_name(&role_name)
+                .policy_name(policy_name)
+                .policy_document(doc)
+                .send()
+                .await;
+        }
+    }
+
+    Ok(state::ResourceRef {
+        name: Some(role_name),
+        arn: Some(arn),
+        ..Default::default()
+    })
+}
+
 async fn ensure_product(
     sc: &aws_sdk_servicecatalog::Client,
     s3: &aws_sdk_s3::Client,
@@ -762,17 +935,46 @@ async fn ensure_launch_constraint(
         return Ok(());
     }
 
-    // Best-effort: create constraint; ignore if it already exists.
     let params = serde_json::json!({ "RoleArn": role_arn }).to_string();
-    let _ = sc
+    let create = sc
         .create_constraint()
         .portfolio_id(portfolio_id)
         .product_id(product_id)
         .r#type("LAUNCH")
-        .parameters(params)
+        .parameters(params.clone())
         .description(format!("Launch constraint for {product_name}"))
         .send()
         .await;
-    Ok(())
+
+    match create {
+        Ok(_) => Ok(()),
+        Err(e) => {
+            // Try to update existing LAUNCH constraint (if present) to the desired role ARN.
+            let listed = sc
+                .list_constraints_for_portfolio()
+                .portfolio_id(portfolio_id)
+                .product_id(product_id)
+                .send()
+                .await
+                .context("list_constraints_for_portfolio")?;
+
+            if let Some(existing) = listed
+                .constraint_details()
+                .iter()
+                .find(|c| c.r#type() == Some("LAUNCH"))
+                .and_then(|c| c.constraint_id())
+            {
+                sc.update_constraint()
+                    .id(existing)
+                    .parameters(params)
+                    .send()
+                    .await
+                    .context("update_constraint")?;
+                Ok(())
+            } else {
+                Err(anyhow::anyhow!(e).context("create_constraint (LAUNCH)"))
+            }
+        }
+    }
 }
 

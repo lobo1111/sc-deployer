@@ -15,6 +15,16 @@ pub struct Profile {
     pub aws_profile: String,
     pub aws_region: String,
     pub account_id: String,
+    /// Per-product provisioning parameter values (merged into `deploy apply`).
+    ///
+    /// Example:
+    /// profiles:
+    ///   dev:
+    ///     product_parameters:
+    ///       networking:
+    ///         VpcCidr: 10.0.0.0/16
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub product_parameters: BTreeMap<String, BTreeMap<String, String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -142,6 +152,21 @@ pub struct ProductSpec {
     #[serde(default)]
     pub portfolio: String,
 
+    /// Optional launch role *definition* for this product.
+    ///
+    /// If set, `scd sync` will ensure this IAM role exists (create if missing) and then use its ARN
+    /// for the Service Catalog LAUNCH constraint. This guarantees the role exists before provisioning.
+    #[serde(default)]
+    pub launch_role: Option<LaunchRoleSpec>,
+
+    /// Optional IAM role ARN to use for this product's Service Catalog LAUNCH constraint.
+    ///
+    /// If omitted, scd uses the environment default launch role created during `scd sync`.
+    ///
+    /// You can use `${account_id}` as a placeholder (expanded during `scd sync`).
+    #[serde(default)]
+    pub launch_role_arn: Option<String>,
+
     #[serde(default)]
     pub ecr_repository: Option<String>,
 
@@ -153,6 +178,29 @@ pub struct ProductSpec {
 
     #[serde(default)]
     pub outputs: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
+pub struct LaunchRoleSpec {
+    /// IAM role name. If omitted, defaults to `scd-launch-role-<environment>-<product>`.
+    #[serde(default)]
+    pub name: Option<String>,
+
+    /// Managed policy ARNs to attach to the role.
+    ///
+    /// If omitted, scd uses the same broad default policies as the environment launch role.
+    /// If provided as an empty list, scd will create the role without attaching any managed policies.
+    #[serde(default)]
+    pub managed_policy_arns: Option<Vec<String>>,
+
+    /// Inline policies to attach to the role (policy name -> IAM policy document).
+    ///
+    /// These are applied during `scd sync` via IAM `PutRolePolicy`, ensuring the role is ready
+    /// before the Service Catalog LAUNCH constraint is created.
+    ///
+    /// Note: policy documents are stored as JSON (YAML is accepted and converted to JSON).
+    #[serde(default)]
+    pub inline_policies: Option<BTreeMap<String, serde_json::Value>>,
 }
 
 pub fn load_yaml<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
@@ -186,6 +234,7 @@ mod tests {
                 aws_profile: "sandbox".to_string(),
                 aws_region: "us-east-1".to_string(),
                 account_id: "111111111111".to_string(),
+                product_parameters: BTreeMap::new(),
             },
         );
 
@@ -205,6 +254,29 @@ mod tests {
             ProductSpec {
                 path: "networking".to_string(),
                 portfolio: "infra".to_string(),
+                launch_role: Some(LaunchRoleSpec {
+                    name: Some("NetworkingLaunchRole".to_string()),
+                    managed_policy_arns: Some(vec![
+                        "arn:aws:iam::aws:policy/AWSCloudFormationFullAccess".to_string(),
+                        "arn:aws:iam::aws:policy/AmazonEC2FullAccess".to_string(),
+                    ]),
+                    inline_policies: Some({
+                        let mut m = BTreeMap::new();
+                        m.insert(
+                            "AllowDescribeRegions".to_string(),
+                            serde_json::json!({
+                                "Version": "2012-10-17",
+                                "Statement": [{
+                                    "Effect": "Allow",
+                                    "Action": ["ec2:DescribeRegions"],
+                                    "Resource": "*"
+                                }]
+                            }),
+                        );
+                        m
+                    }),
+                }),
+                launch_role_arn: None,
                 ecr_repository: None,
                 dependencies: vec![],
                 parameter_mapping: BTreeMap::new(),
