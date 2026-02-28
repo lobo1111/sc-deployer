@@ -178,6 +178,19 @@ pub struct ProductSpec {
 
     #[serde(default)]
     pub outputs: Vec<String>,
+
+    /// Map artifact_id -> template parameter name for code S3 keys.
+    /// artifact_id: "handler" (Lambda), "resolvers/Query/getItem" (AppSync).
+    /// Enables auto-injection of S3 keys into provisioning params.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub code_param_mapping: BTreeMap<String, String>,
+
+    /// Command to run unit tests (e.g. "pytest tests/", "npm test").
+    /// If omitted, scd auto-detects from pyproject.toml or package.json.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub test_command: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]
@@ -281,6 +294,8 @@ mod tests {
                 dependencies: vec![],
                 parameter_mapping: BTreeMap::new(),
                 outputs: vec!["VpcId".to_string()],
+                code_param_mapping: BTreeMap::new(),
+                test_command: None,
             },
         );
 

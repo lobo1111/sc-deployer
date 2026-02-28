@@ -176,6 +176,15 @@ struct DeployApplyParams {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
+struct DeployPublishCodeParams {
+    #[serde(flatten)]
+    base: DeployBaseParams,
+    /// If true, print intended actions without changing AWS.
+    #[serde(default)]
+    dry_run: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 struct DeployTerminateParams {
     #[serde(flatten)]
     base: DeployBaseParams,
@@ -352,6 +361,28 @@ impl ScdMcp {
         }
         if p.force {
             args.push("--force".into());
+        }
+        run_scd(&p.base.common, args).await
+    }
+
+    #[rmcp::tool(
+        description = "Deploy publish-code: upload Lambda and AppSync code to S3 (same bucket as templates). Use after code-only changes; then run scd_deploy_apply with force."
+    )]
+    async fn scd_deploy_publish_code(
+        &self,
+        params: Parameters<DeployPublishCodeParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let p = params.0;
+        let mut args = scd_base_args(&p.base.common);
+        args.extend([
+            "deploy".into(),
+            "publish-code".into(),
+            "-e".into(),
+            p.base.environment,
+        ]);
+        Self::add_products(&mut args, &p.base.products);
+        if p.dry_run {
+            args.push("--dry-run".into());
         }
         run_scd(&p.base.common, args).await
     }

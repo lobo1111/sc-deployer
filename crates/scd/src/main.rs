@@ -2,12 +2,13 @@ use anyhow::Result;
 use clap::Parser;
 
 mod cli;
-mod project;
+mod code_upload;
 mod config;
-mod state;
-mod aws;
 mod deploy;
 mod manage;
+mod project;
+mod state;
+mod aws;
 
 #[tokio::main]
 async fn main() -> Result<()> {

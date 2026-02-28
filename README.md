@@ -35,10 +35,12 @@
 - `scd products list`
 - `scd products add --name <product> [--path <dir>] [--portfolio <portfolio>] [--description <text>] [--dependency <p>...] [--output <o>...] [--param-mapping Param=dep.out...]`
 - `scd products graph`
+- `scd products test [-p <product>...]` — run unit tests; auto-detects from pyproject.toml (pytest) or package.json (npm test), or use `test_command` in catalog
 - `scd completion <bash|zsh|fish|powershell>`
 - `scd deploy validate -e <env>`
 - `scd deploy plan -e <env> [-p <product>...]`
 - `scd deploy publish -e <env> [-p <product>...] [--dry-run] [--force]`
+- `scd deploy publish-code -e <env> [-p <product>...] [--dry-run]` — upload Lambda/AppSync code to S3 (code-only changes)
 - `scd deploy apply -e <env> [-p <product>...] [--dry-run] [--force]`
 - `scd deploy status -e <env>`
 - `scd deploy terminate -e <env> [-p <product>...] [--dry-run] [--force]`
@@ -68,6 +70,7 @@ These values are merged into the parameters sent during `scd deploy apply` (afte
 By default:
 
 - `scd deploy publish` **skips** products whose `template.yaml` hasn't changed since the last publish (based on a stored template hash). Use `--force` to publish anyway.
+- `scd deploy publish-code` uploads `code/` (Lambda zips) and `resolvers/` (AppSync JS) to the template bucket, with content-hash suffixes to force redeploy when code changes. Run `apply --force` after code-only changes.
 - `scd deploy apply` **skips** products that have already applied the currently published version. Use `--force` to apply anyway.
 
 ### `catalog.yaml`: per-product launch role

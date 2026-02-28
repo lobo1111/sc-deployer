@@ -1,4 +1,4 @@
-use crate::{config, project, state};
+use crate::{config, code_upload, project, state};
 use anyhow::{Context, Result};
 use aws_types::region::Region;
 use sha2::Digest;
@@ -220,6 +220,39 @@ fn generate_version() -> String {
     )
 }
 
+/// Sanitize a string for AWS TerminateProvisionedProduct TerminateToken.
+/// Pattern: [a-zA-Z0-9][a-zA-Z0-9_-]* (max 128 chars). Dots and other invalid chars become '_'.
+fn sanitize_terminate_token(s: &str) -> String {
+    let mut out = String::with_capacity(s.len().min(128));
+    for c in s.chars() {
+        if out.len() >= 128 {
+            break;
+        }
+        if c.is_ascii_alphanumeric() || c == '_' || c == '-' {
+            out.push(c);
+        } else {
+            out.push('_');
+        }
+    }
+    if out.is_empty() {
+        out.push('t');
+    }
+    out
+}
+
+#[cfg(test)]
+#[test]
+fn test_sanitize_terminate_token() {
+    // Dots (from generate_version) must become underscores for AWS pattern [a-zA-Z0-9][a-zA-Z0-9_-]*
+    assert_eq!(
+        sanitize_terminate_token("terminate-networking-2025.02.28.123456"),
+        "terminate-networking-2025_02_28_123456"
+    );
+    assert!(sanitize_terminate_token("terminate-networking-2025.02.28.123456")
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '_' || c == '-'));
+}
+
 fn sha256_hex(data: &[u8]) -> String {
     let mut h = sha2::Sha256::new();
     h.update(data);
@@ -371,6 +404,17 @@ pub async fn publish(
             .await
             .context("put_object template")?;
 
+        // Upload code artifacts (Lambda, AppSync) to same bucket; keys include content-hash suffix
+        let code_artifacts = code_upload::upload_product_code(
+            &s3,
+            &bucket_name,
+            p,
+            &version,
+            &product_path,
+            dry_run,
+        )
+        .await?;
+
         sc.create_provisioning_artifact()
             .product_id(&product_id)
             .parameters(
@@ -397,6 +441,7 @@ pub async fn publish(
         );
         ps.published_hash = Some(template_hash);
         ps.published_commit = commit.clone();
+        ps.code_artifacts = code_artifacts;
         published_any = true;
     }
 
@@ -405,6 +450,96 @@ pub async fn publish(
     }
 
     if !dry_run {
+        state::save_json(&deploy_state_path, &dst)?;
+    }
+    Ok(())
+}
+
+/// Upload code artifacts (Lambda, AppSync) for products that were already published.
+/// Updates code_artifacts in deploy state. Use with `apply --force` to deploy code changes.
+pub async fn publish_code(
+    layout: &project::ProjectLayout,
+    environment: String,
+    products: Vec<String>,
+    dry_run: bool,
+) -> Result<()> {
+    let env = load_env(layout, &environment)?;
+    let catalog = load_catalog(layout)?;
+    let bootstrap = load_bootstrap(layout)?;
+
+    let st_path = layout.deployer_dir().join(bootstrap.settings.state_file);
+    let bst: state::BootstrapState = state::load_json(&st_path)?;
+    let env_bootstrap = bst
+        .environments
+        .get(&environment)
+        .context("missing bootstrap env state")?;
+    let bucket_name = env_bootstrap
+        .template_bucket
+        .as_ref()
+        .and_then(|b| b.name.as_ref())
+        .context("missing template bucket name in bootstrap state")?
+        .clone();
+
+    let shared = aws_config::from_env()
+        .profile_name(&env.aws_profile)
+        .region(Region::new(env.aws_region.clone()))
+        .load()
+        .await;
+    let s3 = aws_sdk_s3::Client::new(&shared);
+
+    let deploy_state_path = layout.deployer_dir().join(catalog.settings.state_file.clone());
+    let mut dst: state::DeployState = state::load_json(&deploy_state_path)?;
+    let env_state = dst
+        .environments
+        .entry(environment.clone())
+        .or_insert_with(state::DeployEnvState::default);
+
+    let candidates: Vec<String> = if products.is_empty() {
+        catalog.products.keys().cloned().collect()
+    } else {
+        products
+    };
+
+    let mut uploaded_any = false;
+    for p in &candidates {
+        let product_path = layout.products_dir().join(&catalog.products[p].path);
+        let code_dir = product_path.join("code");
+        let resolvers_dir = product_path.join("resolvers");
+        if !code_dir.is_dir() && !resolvers_dir.is_dir() {
+            continue;
+        }
+
+        let ps = env_state.products.get(p).cloned().unwrap_or_default();
+        let version = ps
+            .version
+            .clone()
+            .with_context(|| format!("product '{p}' not published yet (run `scd deploy publish -e {environment}` first)"))?;
+
+        println!("Publishing code for {p} (version {version})");
+        let code_artifacts = code_upload::upload_product_code(
+            &s3,
+            &bucket_name,
+            p,
+            &version,
+            &product_path,
+            dry_run,
+        )
+        .await?;
+
+        if let Some(ps_mut) = env_state.products.get_mut(p) {
+            ps_mut.code_artifacts = code_artifacts.clone();
+        } else {
+            let mut ps_new = state::DeployProductState::default();
+            ps_new.version = Some(version);
+            ps_new.code_artifacts = code_artifacts;
+            env_state.products.insert(p.clone(), ps_new);
+        }
+        uploaded_any = true;
+    }
+
+    if !uploaded_any {
+        println!("No products with code/ or resolvers/ to upload.");
+    } else if !dry_run {
         state::save_json(&deploy_state_path, &dst)?;
     }
     Ok(())
@@ -558,6 +693,25 @@ pub async fn apply(
 
         let mut params = resolve_parameters(&catalog, env_state, &p)?;
         params.insert("Environment".to_string(), environment.clone());
+
+        // Inject code artifact S3 keys when catalog has code_param_mapping
+        if let Some(ps) = env_state.products.get(&p) {
+            if !ps.code_artifacts.is_empty() {
+                let bucket_name = env_bootstrap
+                    .template_bucket
+                    .as_ref()
+                    .and_then(|b| b.name.as_ref())
+                    .context("missing template bucket name")?;
+                params.insert("CodeBucket".to_string(), bucket_name.clone());
+                let spec = catalog.products.get(&p).context("product spec")?;
+                for (artifact_id, s3_key) in &ps.code_artifacts {
+                    if let Some(param_name) = spec.code_param_mapping.get(artifact_id) {
+                        params.insert(param_name.clone(), s3_key.clone());
+                    }
+                }
+            }
+        }
+
         if let Some(overrides) = env.product_parameters.get(&p) {
             for (k, v) in overrides {
                 // Reserved parameter is validated elsewhere; keep this defensive anyway.
@@ -746,7 +900,11 @@ pub async fn terminate(
         let out = sc
             .terminate_provisioned_product()
             .provisioned_product_id(&pp_id)
-            .terminate_token(format!("terminate-{}-{}", p, generate_version()))
+            .terminate_token(sanitize_terminate_token(&format!(
+                "terminate-{}-{}",
+                p,
+                generate_version()
+            )))
             .send()
             .await
             .context("terminate_provisioned_product")?;

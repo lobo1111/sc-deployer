@@ -2,6 +2,8 @@ use crate::{aws, config, project};
 use anyhow::{Context, Result};
 use std::collections::BTreeMap;
 use std::fs;
+use std::path::Path;
+use std::process::Command;
 
 pub fn profiles_list(layout: &project::ProjectLayout) -> Result<()> {
     let path = layout.profiles_yaml();
@@ -205,6 +207,8 @@ pub fn products_add(
             dependencies,
             parameter_mapping: pm,
             outputs,
+            code_param_mapping: BTreeMap::new(),
+            test_command: None,
         },
     );
     config::save_yaml(&layout.catalog_yaml(), &catalog)?;
@@ -272,6 +276,94 @@ pub fn products_graph(layout: &project::ProjectLayout) -> Result<()> {
         print_tree(r, &dependents, "", last, &mut Vec::new());
     }
 
+    Ok(())
+}
+
+/// Resolve test command: catalog override, or auto-detect from pyproject.toml / package.json.
+fn resolve_test_command(spec: &config::ProductSpec, product_dir: &Path) -> Option<(String, Vec<String>)> {
+    if let Some(ref cmd) = spec.test_command {
+        // Parse "cmd arg1 arg2" into (cmd, [arg1, arg2])
+        let parts: Vec<&str> = cmd.split_whitespace().collect();
+        if let Some((first, rest)) = parts.split_first() {
+            return Some(((*first).to_string(), rest.iter().map(|s| (*s).to_string()).collect()));
+        }
+    }
+
+    // Auto-detect: pyproject.toml -> pytest
+    if product_dir.join("pyproject.toml").is_file() {
+        return Some(("pytest".to_string(), vec!["tests/".to_string()]));
+    }
+
+    // Auto-detect: package.json with scripts.test -> npm test
+    if let Ok(content) = fs::read_to_string(product_dir.join("package.json")) {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            if let Some(scripts) = json.get("scripts").and_then(|s| s.as_object()) {
+                if scripts.contains_key("test") {
+                    return Some(("npm".to_string(), vec!["test".to_string()]));
+                }
+            }
+        }
+    }
+
+    None
+}
+
+pub fn products_test(layout: &project::ProjectLayout, products: Vec<String>) -> Result<()> {
+    let catalog: config::CatalogFile = config::load_yaml(&layout.catalog_yaml())
+        .with_context(|| format!("load {}", layout.catalog_yaml().display()))?;
+
+    let candidates: Vec<&String> = if products.is_empty() {
+        catalog.products.keys().collect()
+    } else {
+        let mut out = Vec::new();
+        for p in &products {
+            if catalog.products.contains_key(p) {
+                out.push(p);
+            } else {
+                anyhow::bail!("product '{p}' not found in catalog");
+            }
+        }
+        out
+    };
+
+    let mut any_ran = false;
+    for name in candidates {
+        let spec = catalog.products.get(name).context("product")?;
+        let product_dir = layout.products_dir().join(&spec.path);
+
+        if !product_dir.is_dir() {
+            println!("{name}: product dir not found, skipping");
+            continue;
+        }
+
+        let tests_dir = product_dir.join("tests");
+        if !tests_dir.is_dir() {
+            println!("{name}: no tests/ directory, skipping");
+            continue;
+        }
+
+        let Some((cmd, args)) = resolve_test_command(spec, &product_dir) else {
+            println!("{name}: no test_command in catalog and could not auto-detect (add pyproject.toml, package.json with scripts.test, or test_command in catalog)");
+            continue;
+        };
+
+        println!("{name}: running {} {}", cmd, args.join(" "));
+        any_ran = true;
+
+        let status = Command::new(&cmd)
+            .args(&args)
+            .current_dir(&product_dir)
+            .status()
+            .with_context(|| format!("run test command for {name}"))?;
+
+        if !status.success() {
+            anyhow::bail!("{name}: tests failed (exit code {:?})", status.code());
+        }
+    }
+
+    if !any_ran {
+        println!("No products with runnable tests.");
+    }
     Ok(())
 }
 

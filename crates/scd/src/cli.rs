@@ -170,6 +170,13 @@ pub enum ProductsCommand {
 
     /// Print dependency graph
     Graph,
+
+    /// Run unit tests for product(s). Uses test_command from catalog, or auto-detects from pyproject.toml / package.json.
+    Test {
+        /// Specific product(s) to test (defaults to all)
+        #[arg(short = 'p', long = "product")]
+        products: Vec<String>,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -205,6 +212,20 @@ pub enum DeployCommand {
         /// Publish even if unchanged (change detection is minimal in this MVP)
         #[arg(long)]
         force: bool,
+    },
+
+    /// Upload Lambda and AppSync code to S3 (same bucket as templates).
+    /// Use after code-only changes; then run apply --force to update provisioned products.
+    PublishCode {
+        #[arg(short = 'e', long)]
+        environment: String,
+
+        /// Specific product(s) (defaults to all)
+        #[arg(short = 'p', long = "product")]
+        products: Vec<String>,
+
+        #[arg(long)]
+        dry_run: bool,
     },
 
     /// Apply (provision/update) published versions
@@ -338,6 +359,15 @@ pub async fn run(root: RootCmd) -> Result<()> {
                     println!("Publish complete.");
                     Ok(())
                 }
+                DeployCommand::PublishCode {
+                    environment,
+                    products,
+                    dry_run,
+                } => {
+                    deploy::publish_code(&layout, environment, products, dry_run).await?;
+                    println!("Publish-code complete.");
+                    Ok(())
+                }
                 DeployCommand::Apply {
                     environment,
                     products,
@@ -425,6 +455,10 @@ pub async fn run(root: RootCmd) -> Result<()> {
                     Ok(())
                 }
                 ProductsCommand::Graph => manage::products_graph(&layout),
+                ProductsCommand::Test { products } => {
+                    manage::products_test(&layout, products)?;
+                    Ok(())
+                }
             }
         }
 

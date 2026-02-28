@@ -126,6 +126,12 @@ pub struct DeployProductState {
 
     #[serde(default)]
     pub outputs: BTreeMap<String, String>,
+
+    /// S3 keys for code artifacts (Lambda, AppSync) from last publish.
+    /// artifact_id -> S3 key. Used with code_param_mapping to inject into provisioning params.
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub code_artifacts: BTreeMap<String, String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default, PartialEq, Eq)]

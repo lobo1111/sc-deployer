@@ -556,6 +556,18 @@ async fn ensure_portfolio(
     })
 }
 
+fn service_catalog_trust_policy() -> String {
+    serde_json::json!({
+        "Version": "2012-10-17",
+        "Statement": [{
+            "Effect": "Allow",
+            "Principal": {"Service": "servicecatalog.amazonaws.com"},
+            "Action": "sts:AssumeRole"
+        }]
+    })
+    .to_string()
+}
+
 async fn ensure_launch_role(
     iam: &aws_sdk_iam::Client,
     env: &AwsEnv,
@@ -565,29 +577,30 @@ async fn ensure_launch_role(
 
     let role = iam.get_role().role_name(&role_name).send().await;
     let arn = match role {
-        Ok(out) => out
-            .role()
-            .map(|r| r.arn().to_string())
-            .unwrap_or_default(),
+        Ok(out) => {
+            let arn = out
+                .role()
+                .map(|r| r.arn().to_string())
+                .unwrap_or_default();
+            if !dry_run && !arn.is_empty() {
+                iam.update_assume_role_policy()
+                    .role_name(&role_name)
+                    .policy_document(service_catalog_trust_policy())
+                    .send()
+                    .await
+                    .context("update launch role trust policy for Service Catalog")?;
+            }
+            arn
+        }
         Err(_) => {
             if dry_run {
                 println!("[DRY RUN] create iam role {role_name}");
                 format!("arn:aws:iam::{}:role/{role_name}", env.account_id)
             } else {
-                let trust = serde_json::json!({
-                  "Version": "2012-10-17",
-                  "Statement": [{
-                    "Effect": "Allow",
-                    "Principal": {"Service": "servicecatalog.amazonaws.com"},
-                    "Action": "sts:AssumeRole"
-                  }]
-                })
-                .to_string();
-
                 let out = iam
                     .create_role()
                     .role_name(&role_name)
-                    .assume_role_policy_document(trust)
+                    .assume_role_policy_document(service_catalog_trust_policy())
                     .description(format!("Service Catalog launch role for {}", env.environment))
                     .tags(
                         aws_sdk_iam::types::Tag::builder()
@@ -654,29 +667,30 @@ async fn ensure_product_launch_role(
 
     let role = iam.get_role().role_name(&role_name).send().await;
     let arn = match role {
-        Ok(out) => out
-            .role()
-            .map(|r| r.arn().to_string())
-            .unwrap_or_default(),
+        Ok(out) => {
+            let arn = out
+                .role()
+                .map(|r| r.arn().to_string())
+                .unwrap_or_default();
+            if !dry_run && !arn.is_empty() {
+                iam.update_assume_role_policy()
+                    .role_name(&role_name)
+                    .policy_document(service_catalog_trust_policy())
+                    .send()
+                    .await
+                    .context("update product launch role trust policy for Service Catalog")?;
+            }
+            arn
+        }
         Err(_) => {
             if dry_run {
                 println!("[DRY RUN] create iam role {role_name}");
                 format!("arn:aws:iam::{}:role/{role_name}", env.account_id)
             } else {
-                let trust = serde_json::json!({
-                  "Version": "2012-10-17",
-                  "Statement": [{
-                    "Effect": "Allow",
-                    "Principal": {"Service": "servicecatalog.amazonaws.com"},
-                    "Action": "sts:AssumeRole"
-                  }]
-                })
-                .to_string();
-
                 let out = iam
                     .create_role()
                     .role_name(&role_name)
-                    .assume_role_policy_document(trust)
+                    .assume_role_policy_document(service_catalog_trust_policy())
                     .description(format!(
                         "Service Catalog launch role for {} (product {})",
                         env.environment, product_key
